@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Storybook Editor</title>
+  <script>
+    // Polyfill for 'global' and 'require' in browser context
+    if (typeof global === 'undefined') {
+      var global = window;
+    }
+    // Polyfill for 'events' module before webpack-dev-server loads
+    (function() {
+      function EventEmitter() {
+        this._events = this._events || {};
+      }
+      EventEmitter.prototype.on = function(type, listener) {
+        if (!this._events[type]) this._events[type] = [];
+        this._events[type].push(listener);
+        return this;
+      };
+      EventEmitter.prototype.emit = function(type) {
+        if (this._events[type]) {
+          var args = Array.prototype.slice.call(arguments, 1);
+          this._events[type].forEach(function(listener) {
+            listener.apply(this, args);
+          }, this);
+        }
+        return this;
+      };
+      EventEmitter.prototype.removeListener = function(type, listener) {
+        if (this._events[type]) {
+          this._events[type] = this._events[type].filter(function(l) { return l !== listener; });
+          if (this._events[type].length === 0) delete this._events[type];
+        }
+        return this;
+      };
+      
+      // Make EventEmitter available globally
+      window.EventEmitter = EventEmitter;
+      
+      // Provide require polyfill for events module
+      if (typeof require === 'undefined') {
+        window.require = function(module) {
+          if (module === 'events') {
+            return EventEmitter;
+          }
+          throw new Error('Cannot find module: ' + module);
+        };
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+</body>
+</html>
+
