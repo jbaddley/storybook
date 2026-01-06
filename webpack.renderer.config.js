@@ -7,7 +7,8 @@ module.exports = (env, argv) => {
 
   return {
     entry: './src/renderer/index.tsx',
-    target: 'electron-renderer',
+    // Use 'web' target for dev to avoid Node.js externals issue with webpack-dev-server
+    target: isDevelopment ? 'web' : 'electron-renderer',
     devtool: isDevelopment ? 'eval-source-map' : 'source-map',
     module: {
       rules: [
@@ -42,7 +43,8 @@ module.exports = (env, argv) => {
         "crypto": false,
         "stream": false,
         "util": false,
-        "buffer": false
+        "buffer": require.resolve('buffer/'),
+        "events": require.resolve('./src/renderer/utils/events-polyfill.js')
       }
     },
     plugins: [

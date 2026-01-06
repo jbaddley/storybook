@@ -7,4 +7,6 @@ release/
 *.swo
 .vscode/
 .idea/
+.env
+.env.local
 

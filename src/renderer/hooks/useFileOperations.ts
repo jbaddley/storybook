@@ -1,111 +1,240 @@
-import { useCallback } from 'react';
-import { useEditorStore } from '../stores/editorStore';
-import { useProjectStore } from '../stores/projectStore';
-import { useChaptersStore } from '../stores/chaptersStore';
-import { useStoryElementsStore } from '../stores/storyElementsStore';
-import { electronAPI, ProjectData } from '../utils/electronAPI';
+import { useCallback, useEffect, useRef } from 'react';
+import { useBookStore } from '../stores/bookStore';
+import { fileService } from '../services/fileService';
+import { exportService } from '../services/exportService';
 
-export const useFileOperations = () => {
-  const { content, htmlContent, mode, syncWithChapter } = useEditorStore();
-  const { currentFilePath, metadata, setCurrentFilePath, setMetadata } = useProjectStore();
-  const { chapters, getCurrentChapter } = useChaptersStore();
-  const { characters, locations, dates, themes } = useStoryElementsStore();
+// Check if running in Electron
+const isElectron = () => typeof window !== 'undefined' && window.electronAPI !== undefined;
 
-  const saveProject = useCallback(async () => {
-    // Save current chapter content before saving
-    const currentChapter = getCurrentChapter();
-    if (currentChapter) {
-      useChaptersStore.getState().updateChapter(currentChapter.id, {
-        content,
-        htmlContent,
-      });
+// Storage key for last opened file
+const LAST_FILE_KEY = 'storybook-last-file';
+
+// Helper to save last file path
+async function saveLastFilePath(filePath: string) {
+  if (isElectron()) {
+    try {
+      await window.electronAPI.storeSet(LAST_FILE_KEY, filePath);
+    } catch (e) {
+      localStorage.setItem(LAST_FILE_KEY, filePath);
     }
+  } else {
+    localStorage.setItem(LAST_FILE_KEY, filePath);
+  }
+}
 
-    let filePath: string | null = currentFilePath;
+// Helper to get last file path
+async function getLastFilePath(): Promise<string | null> {
+  if (isElectron()) {
+    try {
+      const path = await window.electronAPI.storeGet(LAST_FILE_KEY);
+      return path as string | null;
+    } catch (e) {
+      return localStorage.getItem(LAST_FILE_KEY);
+    }
+  }
+  return localStorage.getItem(LAST_FILE_KEY);
+}
+
+// Helper to clear last file path
+async function clearLastFilePath() {
+  if (isElectron()) {
+    try {
+      await window.electronAPI.storeSet(LAST_FILE_KEY, '');
+    } catch (e) {
+      localStorage.removeItem(LAST_FILE_KEY);
+    }
+  } else {
+    localStorage.removeItem(LAST_FILE_KEY);
+  }
+}
+
+export function useFileOperations() {
+  const { 
+    book, 
+    setBook, 
+    newBook, 
+    ui, 
+    setDirty, 
+    setCurrentFilePath 
+  } = useBookStore();
+
+  const handleNew = useCallback(async () => {
+    if (ui.isDirty) {
+      const shouldSave = confirm('You have unsaved changes. Would you like to save before creating a new book?');
+      if (shouldSave) {
+        await handleSave();
+      }
+    }
+    newBook();
+  }, [ui.isDirty, newBook]);
+
+  const handleOpen = useCallback(async () => {
+    if (!isElectron()) {
+      alert('File operations require running in Electron.');
+      return;
+    }
     
-    if (!filePath) {
-      const newFilePath = await electronAPI.showSaveDialog();
-      if (!newFilePath) return;
-      filePath = newFilePath;
-      setCurrentFilePath(newFilePath);
+    try {
+      const result = await window.electronAPI.openFile();
+      if (result) {
+        const loadedBook = await fileService.loadBook(result.data);
+        setBook(loadedBook);
+        setCurrentFilePath(result.filePath);
+        
+        // Remember this file as the last opened
+        await saveLastFilePath(result.filePath);
+      }
+    } catch (error) {
+      console.error('Error opening file:', error);
+      alert('Failed to open file. Please make sure it is a valid .sbk file.');
     }
+  }, [setBook, setCurrentFilePath]);
 
-    if (!filePath) return; // Type guard
+  // Open a specific file by path
+  const openFilePath = useCallback(async (filePath: string) => {
+    if (!isElectron()) return false;
+    
+    try {
+      const data = await window.electronAPI.readFile(filePath);
+      if (data) {
+        const loadedBook = await fileService.loadBook(data);
+        setBook(loadedBook);
+        setCurrentFilePath(filePath);
+        console.log('Opened last file:', filePath);
+        return true;
+      }
+    } catch (error) {
+      console.error('Error opening file:', error);
+      // Clear the last file if it can't be opened
+      clearLastFilePath();
+    }
+    return false;
+  }, [setBook, setCurrentFilePath]);
 
-    const projectData: ProjectData = {
-      metadata: {
-        ...metadata,
-        updatedAt: new Date().toISOString(),
-      },
-      storyElements: {
-        characters,
-        locations,
-        dates,
-        themes,
-      },
-      chapters: chapters.length > 0 ? chapters : undefined,
-      // Legacy support: if no chapters, save as single content
-      ...(chapters.length === 0 && {
-        content: mode === 'markdown' ? content : '',
-        htmlContent: mode === 'wysiwyg' ? htmlContent : undefined,
-      }),
+  const handleSave = useCallback(async () => {
+    if (!isElectron()) {
+      // In browser mode, save to localStorage as a demo
+      try {
+        const data = await fileService.saveBook(book);
+        localStorage.setItem('storybook-autosave', data);
+        setDirty(false);
+        console.log('Saved to localStorage');
+      } catch (error) {
+        console.error('Error saving:', error);
+      }
+      return;
+    }
+    
+    try {
+      const data = await fileService.saveBook(book);
+      const filePath = await window.electronAPI.saveFile(data, ui.currentFilePath || undefined);
+      
+      if (filePath) {
+        setCurrentFilePath(filePath);
+        setDirty(false);
+        // Remember this file as the last opened
+        await saveLastFilePath(filePath);
+      }
+    } catch (error) {
+      console.error('Error saving file:', error);
+      alert('Failed to save file.');
+    }
+  }, [book, ui.currentFilePath, setCurrentFilePath, setDirty]);
+
+  const handleSaveAs = useCallback(async () => {
+    if (!isElectron()) {
+      alert('Save As requires running in Electron.');
+      return;
+    }
+    
+    try {
+      const data = await fileService.saveBook(book);
+      const filePath = await window.electronAPI.saveFileAs(data);
+      
+      if (filePath) {
+        setCurrentFilePath(filePath);
+        setDirty(false);
+        // Remember this file as the last opened
+        await saveLastFilePath(filePath);
+      }
+    } catch (error) {
+      console.error('Error saving file:', error);
+      alert('Failed to save file.');
+    }
+  }, [book, setCurrentFilePath, setDirty]);
+
+  const handleExportDocx = useCallback(async () => {
+    if (!isElectron()) {
+      // In browser mode, download as blob
+      try {
+        const data = await exportService.exportToDocx(book);
+        const blob = new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], 
+          { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${book.title}.docx`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        console.error('Error exporting DOCX:', error);
+        alert('Failed to export DOCX.');
+      }
+      return;
+    }
+    
+    try {
+      const data = await exportService.exportToDocx(book);
+      await window.electronAPI.exportDocx(data);
+    } catch (error) {
+      console.error('Error exporting DOCX:', error);
+      alert('Failed to export DOCX.');
+    }
+  }, [book]);
+
+  const handleExportPdf = useCallback(async () => {
+    if (!isElectron()) {
+      alert('PDF export requires running in Electron.');
+      return;
+    }
+    
+    try {
+      const data = await exportService.exportToPdf(book);
+      await window.electronAPI.exportPdf(data);
+    } catch (error) {
+      console.error('Error exporting PDF:', error);
+      alert('Failed to export PDF.');
+    }
+  }, [book]);
+
+  // Track if we've attempted to load the last file
+  const hasAttemptedLastFile = useRef(false);
+
+  // Load the last opened file on startup
+  useEffect(() => {
+    if (hasAttemptedLastFile.current) return;
+    hasAttemptedLastFile.current = true;
+
+    const loadLastFile = async () => {
+      const lastPath = await getLastFilePath();
+      if (lastPath) {
+        console.log('Attempting to open last file:', lastPath);
+        await openFilePath(lastPath);
+      }
     };
 
-    await electronAPI.saveProject(filePath, projectData);
-  }, [content, htmlContent, mode, currentFilePath, metadata, setCurrentFilePath, chapters, getCurrentChapter, characters, locations, dates, themes]);
-
-  const openProject = useCallback(async () => {
-    const filePath = await electronAPI.showOpenDialog();
-    if (!filePath) return;
-
-    const projectData = await electronAPI.loadProject(filePath);
-    
-    setCurrentFilePath(filePath || null);
-    setMetadata(projectData.metadata);
-    
-    // Restore chapters if available (new format)
-    if (projectData.chapters && projectData.chapters.length > 0) {
-      useChaptersStore.getState().setChapters(projectData.chapters);
-      // Set first chapter as current
-      if (projectData.chapters.length > 0) {
-        useChaptersStore.getState().setCurrentChapter(projectData.chapters[0].id);
-        syncWithChapter();
-      }
-    } else {
-      // Legacy format: single content
-      useChaptersStore.getState().setChapters([]);
-      if (projectData.htmlContent) {
-        useEditorStore.getState().setHtmlContent(projectData.htmlContent);
-        useEditorStore.getState().setMode('wysiwyg');
-      } else if (projectData.content) {
-        useEditorStore.getState().setContent(projectData.content);
-        useEditorStore.getState().setMode('markdown');
-      }
-    }
-
-    // Restore story elements if available
-    if (projectData.storyElements) {
-      useStoryElementsStore.getState().setElements(projectData.storyElements);
-    }
-  }, [setCurrentFilePath, setMetadata, syncWithChapter]);
-
-  const newProject = useCallback(() => {
-    setCurrentFilePath(null);
-    setMetadata({
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    useChaptersStore.getState().setChapters([]);
-    useChaptersStore.getState().setCurrentChapter(null);
-    useEditorStore.getState().setContent('');
-    useEditorStore.getState().setHtmlContent('');
-    useStoryElementsStore.getState().clearAll();
-  }, [setCurrentFilePath, setMetadata]);
+    // Small delay to let the app initialize
+    setTimeout(loadLastFile, 100);
+  }, [openFilePath]);
 
   return {
-    saveProject,
-    openProject,
-    newProject,
+    handleNew,
+    handleOpen,
+    handleSave,
+    handleSaveAs,
+    handleExportDocx,
+    handleExportPdf,
+    openFilePath,
   };
-};
+}
 

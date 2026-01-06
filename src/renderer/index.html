@@ -3,53 +3,33 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' https://api.openai.com https://fonts.googleapis.com https://fonts.gstatic.com ws://localhost:3000 wss://localhost:3000; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com;">
   <title>Storybook Editor</title>
-  <script>
-    // Polyfill for 'global' and 'require' in browser context
-    if (typeof global === 'undefined') {
-      var global = window;
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Bitter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Bree+Serif&family=Cabin:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Carlito:ital,wght@0,400;0,700;1,400;1,700&family=Caladea:ital,wght@0,400;0,700;1,400;1,700&family=Caveat:wght@400;500;600;700&family=Comfortaa:wght@400;500;600;700&family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400&family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Lato:ital,wght@0,400;0,700;1,400&family=Lexend:wght@400;500;600;700&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lobster&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Merriweather:ital,wght@0,400;0,700;1,400&family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Noto+Serif:ital,wght@0,400;0,700;1,400&family=Nunito:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Open+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Oswald:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Poppins:ital,wght@0,400;0,500;0,600;0,700;1,400&family=PT+Serif:ital,wght@0,400;0,700;1,400&family=Raleway:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Roboto:ital,wght@0,400;0,500;0,700;1,400&family=Roboto+Slab:wght@400;500;600;700&family=Source+Serif+Pro:ital,wght@0,400;0,600;0,700;1,400&family=Spectral:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    /* Prevent flash of unstyled content */
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background-color: #1e1e2e;
     }
-    // Polyfill for 'events' module before webpack-dev-server loads
-    (function() {
-      function EventEmitter() {
-        this._events = this._events || {};
-      }
-      EventEmitter.prototype.on = function(type, listener) {
-        if (!this._events[type]) this._events[type] = [];
-        this._events[type].push(listener);
-        return this;
-      };
-      EventEmitter.prototype.emit = function(type) {
-        if (this._events[type]) {
-          var args = Array.prototype.slice.call(arguments, 1);
-          this._events[type].forEach(function(listener) {
-            listener.apply(this, args);
-          }, this);
-        }
-        return this;
-      };
-      EventEmitter.prototype.removeListener = function(type, listener) {
-        if (this._events[type]) {
-          this._events[type] = this._events[type].filter(function(l) { return l !== listener; });
-          if (this._events[type].length === 0) delete this._events[type];
-        }
-        return this;
-      };
-      
-      // Make EventEmitter available globally
-      window.EventEmitter = EventEmitter;
-      
-      // Provide require polyfill for events module
-      if (typeof require === 'undefined') {
-        window.require = function(module) {
-          if (module === 'events') {
-            return EventEmitter;
-          }
-          throw new Error('Cannot find module: ' + module);
-        };
-      }
-    })();
-  </script>
+    
+    /* Loading state */
+    #root:empty::after {
+      content: 'Loading...';
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #cdd6f4;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+    }
+  </style>
 </head>
 <body>
   <div id="root"></div>
