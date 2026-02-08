@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { useBookStore } from '../stores/bookStore';
-import { Character, Location, TimelineEvent, DocumentTab, StoryCraftChapterFeedback, StoryCraftChecklistItem, Theme, Motif, Symbol } from '../../shared/types';
+import { Character, Location, TimelineEvent, DocumentTab, StoryCraftChapterFeedback, StoryCraftChecklistItem, Theme, Motif, Symbol, generateId } from '../../shared/types';
+import { ChapterVariationDialog } from './ChapterVariationDialog';
+import PlotAnalysisView from './PlotAnalysisView';
+import { openAIService } from '../services/openaiService';
+import { useOpenAI } from '../hooks/useOpenAI';
 
 // Icons
 const ChevronIcon = ({ expanded }: { expanded: boolean }) => (
@@ -63,6 +67,84 @@ const CancelIcon = () => (
   </svg>
 );
 
+const SparklesIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/>
+    <path d="M5 19l.5 1.5L7 21l-1.5.5L5 23l-.5-1.5L3 21l1.5-.5L5 19z"/>
+    <path d="M19 5l.5 1.5L21 7l-1.5.5L19 9l-.5-1.5L17 7l1.5-.5L19 5z"/>
+  </svg>
+);
+
+// Helper to extract text from TipTap content (used by CustomTabView and others)
+function extractTextFromContent(content: any): string {
+  if (!content?.content) return '';
+  return content.content
+    .map((node: any) => {
+      if (node.text) return node.text;
+      if (node.content) return extractTextFromContent(node);
+      return '';
+    })
+    .join('\n');
+}
+
+// Empty State Component (defined early so all views can use it)
+const EmptyState: React.FC<{ icon: string; title: string; description: string | React.ReactNode }> = ({
+  icon,
+  title,
+  description,
+}) => (
+  <div className="tab-viewer-empty">
+    <span className="empty-icon">{icon}</span>
+    <h3>{title}</h3>
+    <p>{description}</p>
+  </div>
+);
+
+// Custom Tab View (editable content) - defined early so DocumentTabViewer can use it
+const CustomTabView: React.FC<{ tab: DocumentTab }> = ({ tab }) => {
+  const { updateDocumentTabContent } = useBookStore();
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const autoResize = () => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    }
+  };
+
+  React.useEffect(() => {
+    autoResize();
+  }, []);
+
+  return (
+    <div className="tab-viewer">
+      <div className="tab-viewer-header">
+        <h2>{tab.title}</h2>
+        <p className="text-muted">Custom document tab</p>
+      </div>
+      <div className="tab-viewer-content custom-tab-content">
+        <textarea
+          ref={textareaRef}
+          className="custom-tab-editor"
+          placeholder="Add your notes here..."
+          defaultValue={extractTextFromContent(tab.content)}
+          onChange={(e) => {
+            autoResize();
+            updateDocumentTabContent(tab.id, {
+              type: 'doc',
+              content: e.target.value.split('\n').map(line => ({
+                type: 'paragraph',
+                content: line ? [{ type: 'text', text: line }] : [],
+              })),
+            });
+          }}
+        />
+      </div>
+    </div>
+  );
+};
+
 interface DocumentTabViewerProps {
   tab: DocumentTab;
 }
@@ -75,12 +157,12 @@ export const DocumentTabViewer: React.FC<DocumentTabViewerProps> = ({ tab }) => 
       return <LocationsView />;
     case 'timeline':
       return <TimelineView />;
-    case 'summaries':
-      return <SummariesView />;
     case 'storycraft':
       return <StoryCraftView />;
     case 'themes':
       return <ThemesView />;
+    case 'plotanalysis':
+      return <PlotAnalysisView />;
     case 'custom':
       return <CustomTabView tab={tab} />;
     default:
@@ -515,10 +597,12 @@ const SummaryEditForm: React.FC<{
   );
 };
 
-// Summaries View - displays as a single continuous document
+// Summaries View - displays as a single continuous document with improved UX
 const SummariesView: React.FC = () => {
   const { book, ai, getChapterById, updateSummary, deleteSummary } = useBookStore();
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [expandedChapters, setExpandedChapters] = useState<Set<string>>(new Set());
+  const [allExpanded, setAllExpanded] = useState(true);
 
   // Get all summaries as an array, sorted by chapter order
   const summaries = Array.from(ai.summaries.entries())
@@ -527,8 +611,36 @@ const SummariesView: React.FC = () => {
       summary,
       chapter: getChapterById(chapterId),
     }))
-    .filter(s => s.chapter) // Only include summaries for existing chapters
+    .filter(s => s.chapter)
     .sort((a, b) => (a.chapter?.order || 0) - (b.chapter?.order || 0));
+
+  // Initialize all chapters as expanded
+  React.useEffect(() => {
+    if (summaries.length > 0 && expandedChapters.size === 0) {
+      setExpandedChapters(new Set(summaries.map(s => s.chapterId)));
+    }
+  }, [summaries.length]);
+
+  const toggleChapter = (chapterId: string) => {
+    const newExpanded = new Set(expandedChapters);
+    if (newExpanded.has(chapterId)) {
+      newExpanded.delete(chapterId);
+    } else {
+      newExpanded.add(chapterId);
+    }
+    setExpandedChapters(newExpanded);
+    setAllExpanded(newExpanded.size === summaries.length);
+  };
+
+  const toggleAll = () => {
+    if (allExpanded) {
+      setExpandedChapters(new Set());
+      setAllExpanded(false);
+    } else {
+      setExpandedChapters(new Set(summaries.map(s => s.chapterId)));
+      setAllExpanded(true);
+    }
+  };
 
   const handleDelete = (chapterId: string, chapterTitle: string) => {
     if (confirm(`Delete summary for "${chapterTitle}"? This cannot be undone.`)) {
@@ -536,80 +648,123 @@ const SummariesView: React.FC = () => {
     }
   };
 
+  const getWordCount = (text: string) => text.split(/\s+/).filter(w => w).length;
+  const totalWords = summaries.reduce((acc, s) => acc + getWordCount(s.summary.summary), 0);
+
   if (summaries.length === 0) {
     return (
       <EmptyState 
         icon="📝" 
         title="No Chapter Summaries"
-        description="Use the 'Summarize Chapter' feature in the AI Assistant panel to generate summaries for your chapters."
+        description="Use the 'Extract All' button in the AI Assistant panel to generate summaries for your chapters."
       />
     );
   }
 
   return (
-    <div className="tab-viewer">
-      <div className="tab-viewer-header">
-        <h2>Book Summary</h2>
-        <p className="text-muted">{summaries.length} chapter{summaries.length !== 1 ? 's' : ''} summarized</p>
+    <div className="tab-viewer summaries-view">
+      {/* Header */}
+      <div className="summaries-header">
+        <div className="summaries-header-top">
+          <h2>📖 Book Summaries</h2>
+          <button 
+            className="btn-text" 
+            onClick={toggleAll}
+            title={allExpanded ? "Collapse all chapters" : "Expand all chapters"}
+          >
+            {allExpanded ? '⊟ Collapse All' : '⊞ Expand All'}
+          </button>
+        </div>
+        <div className="summaries-stats">
+          <span className="stat">
+            <strong>{summaries.length}</strong> of {book.chapters.length} chapters
+          </span>
+          <span className="stat-divider">•</span>
+          <span className="stat">
+            <strong>{totalWords.toLocaleString()}</strong> words total
+          </span>
+        </div>
       </div>
       
-      <div className="summaries-document">
+      {/* Summary List */}
+      <div className="summaries-list">
         {summaries.map(({ chapterId, summary, chapter }, index) => {
           const isEditing = editingId === chapterId;
+          const isExpanded = expandedChapters.has(chapterId);
+          const chapterNum = chapter?.order || index + 1;
+          const wordCount = getWordCount(summary.summary);
           
           return (
-            <div key={chapterId} className="summary-chapter-section">
-              {isEditing ? (
-                <>
-                  <h3 className="summary-chapter-title">{chapter?.title || 'Unknown Chapter'}</h3>
-                  <SummaryEditForm
-                    summary={summary}
-                    onSave={(updates) => {
-                      updateSummary(chapterId, updates);
-                      setEditingId(null);
-                    }}
-                    onCancel={() => setEditingId(null)}
-                  />
-                </>
-              ) : (
-                <>
-                  <div className="entry-header">
-                    <h3 className="summary-chapter-title">{chapter?.title || 'Unknown Chapter'}</h3>
-                    <div className="entry-actions">
-                      <button 
-                        className="btn-icon" 
-                        onClick={() => setEditingId(chapterId)}
-                        title="Edit summary"
-                      >
-                        <EditIcon />
-                      </button>
-                      <button 
-                        className="btn-icon btn-danger" 
-                        onClick={() => handleDelete(chapterId, chapter?.title || 'Unknown')}
-                        title="Delete summary"
-                      >
-                        <DeleteIcon />
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <p className="summary-text">{summary.summary}</p>
-                  
-                  {summary.keyPoints.length > 0 && (
-                    <div className="summary-key-points-inline">
-                      <strong>Key Points:</strong>
-                      <ul>
-                        {summary.keyPoints.map((point, idx) => (
-                          <li key={idx}>{point}</li>
-                        ))}
-                      </ul>
-                    </div>
+            <div key={chapterId} className={`summary-card ${isExpanded ? 'expanded' : 'collapsed'}`}>
+              {/* Chapter Header - Always Visible */}
+              <div 
+                className="summary-card-header"
+                onClick={() => !isEditing && toggleChapter(chapterId)}
+              >
+                <div className="summary-card-title">
+                  <span className="chapter-badge">{chapterNum}</span>
+                  <h3>{chapter?.title || 'Unknown Chapter'}</h3>
+                </div>
+                <div className="summary-card-meta">
+                  <span className="word-count">{wordCount} words</span>
+                  {!isEditing && (
+                    <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
                   )}
-                </>
-              )}
+                </div>
+              </div>
               
-              {index < summaries.length - 1 && (
-                <hr className="summary-divider" />
+              {/* Expandable Content */}
+              {isExpanded && (
+                <div className="summary-card-content">
+                  {isEditing ? (
+                    <SummaryEditForm
+                      summary={summary}
+                      onSave={(updates) => {
+                        updateSummary(chapterId, updates);
+                        setEditingId(null);
+                      }}
+                      onCancel={() => setEditingId(null)}
+                    />
+                  ) : (
+                    <>
+                      {/* Summary Text */}
+                      <div className="summary-body">
+                        <p>{summary.summary}</p>
+                      </div>
+                      
+                      {/* Key Points */}
+                      {summary.keyPoints.length > 0 && (
+                        <div className="summary-key-points-box">
+                          <div className="key-points-header">
+                            <span className="key-points-icon">💡</span>
+                            <span>Key Points</span>
+                          </div>
+                          <ul>
+                            {summary.keyPoints.map((point, idx) => (
+                              <li key={idx}>{point}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      
+                      {/* Actions */}
+                      <div className="summary-card-actions">
+                        <button 
+                          className="btn-small" 
+                          onClick={(e) => { e.stopPropagation(); setEditingId(chapterId); }}
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button 
+                          className="btn-small btn-danger" 
+                          onClick={(e) => { e.stopPropagation(); handleDelete(chapterId, chapter?.title || 'Unknown'); }}
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           );
@@ -843,19 +998,45 @@ const TimelineView: React.FC = () => {
   );
 };
 
+// Helper to extract plain text from TipTap content (used by StoryCraftView for re-run)
+function extractTextFromTipTapContent(content: any): string {
+  if (!content?.content) return '';
+  return content.content
+    .map((node: any) => {
+      if (node.text) return node.text;
+      if (node.content) return extractTextFromTipTapContent(node);
+      return '';
+    })
+    .join(' ');
+}
+
 // Story Craft Feedback View
 const StoryCraftView: React.FC = () => {
-  const { book, getChapterById, updateStoryCraftChecklist, setActiveChapter, setActiveDocumentTab } = useBookStore();
+  const { book, ai, getChapterById, updateStoryCraftChecklist, setActiveChapter, setActiveDocumentTab, deleteStoryCraftFeedback, replaceStoryCraftFeedback, setStoryCraftRunningChapterId, getAllPromisesMade } = useBookStore();
+  const { isConfigured } = useOpenAI();
   const [expandedChapters, setExpandedChapters] = useState<Set<string>>(new Set());
+  const [variationDialogChapterId, setVariationDialogChapterId] = useState<string | null>(null);
+  const [variationSuggestions, setVariationSuggestions] = useState<StoryCraftChecklistItem[]>([]);
   
   const feedback = book.extracted.storyCraftFeedback || [];
+  const summaries = book.extracted.summaries || [];
+  const storyCraftRunningChapterId = ai.storyCraftRunningChapterId;
   
-  // Sort by chapter order
-  const sortedFeedback = [...feedback].sort((a, b) => {
-    const chapterA = getChapterById(a.chapterId);
-    const chapterB = getChapterById(b.chapterId);
-    return (chapterA?.order || 0) - (chapterB?.order || 0);
-  });
+  // Show all chapters (sorted by order) so none can "disappear" – each shows feedback or a placeholder
+  const sortedChapters = [...book.chapters].sort((a, b) => a.order - b.order);
+  
+  // Helper to get summary for a chapter (from StoryCraft or regular summaries)
+  const getSummaryForChapter = (chapterId: string, storyCraftSummary?: string): string | null => {
+    // First try StoryCraft summary
+    if (storyCraftSummary) return storyCraftSummary;
+    // Fall back to regular chapter summary
+    const regularSummary = summaries.find(s => s.chapterId === chapterId);
+    return regularSummary?.summary || null;
+  };
+  
+  // Get feedback for a chapter (if any)
+  const getFeedbackForChapter = (chapterId: string) =>
+    feedback.find(f => f.chapterId === chapterId);
 
   const toggleChapter = (chapterId: string) => {
     setExpandedChapters(prev => {
@@ -878,6 +1059,70 @@ const StoryCraftView: React.FC = () => {
     setActiveChapter(chapterId);
   };
 
+  const openVariationDialog = (chapterId: string, suggestions: StoryCraftChecklistItem[]) => {
+    setVariationDialogChapterId(chapterId);
+    setVariationSuggestions(suggestions);
+  };
+
+  const handleRerunStoryCraft = async (chapterId: string) => {
+    const chapter = getChapterById(chapterId);
+    if (!chapter || !isConfigured) return;
+    setStoryCraftRunningChapterId(chapterId);
+    try {
+      const chapterText = extractTextFromTipTapContent(chapter.content);
+      const themesContext = book.extracted.themesAndMotifs?.themes.map(t => t.name).join(', ');
+      const previousPromises = getAllPromisesMade(chapter.order);
+      const result = await openAIService.extractStoryCraftFeedback(
+        chapterText,
+        chapter.id,
+        chapter.title,
+        {
+          themes: themesContext,
+          previousPromises: previousPromises.length > 0 ? previousPromises : undefined,
+          bookSettings: book.settings.bookContext,
+          chapterPurpose: chapter.purpose,
+        }
+      );
+      if (result) {
+        const newFeedback: StoryCraftChapterFeedback = {
+          chapterId: chapter.id,
+          chapterTitle: chapter.title,
+          assessment: result.assessment,
+          checklist: result.checklist.map(item => ({
+            id: generateId(),
+            category: item.category as StoryCraftChecklistItem['category'],
+            suggestion: item.suggestion,
+            isCompleted: false,
+            addedAt: new Date().toISOString(),
+          })),
+          summary: result.summary,
+          promisesMade: result.promisesMade?.map(p => ({
+            id: generateId(),
+            type: p.type,
+            description: p.description,
+            context: p.context,
+            chapterId: chapter.id,
+            chapterTitle: chapter.title,
+          })),
+          promisesKept: result.promisesKept?.map(p => ({
+            promiseId: p.promiseId,
+            promiseDescription: p.promiseDescription,
+            howKept: p.howKept,
+            chapterWherePromised: p.chapterWherePromised,
+            chapterTitleWherePromised: p.chapterTitleWherePromised,
+          })),
+          generatedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+        replaceStoryCraftFeedback(chapterId, newFeedback);
+      }
+    } catch (err) {
+      console.error('Re-run story craft failed:', err);
+    } finally {
+      setStoryCraftRunningChapterId(null);
+    }
+  };
+
   const getScoreColor = (score: number) => {
     if (score >= 4) return 'var(--accent-success)';
     if (score >= 3) return 'var(--accent-warning)';
@@ -892,30 +1137,36 @@ const StoryCraftView: React.FC = () => {
     return 'Poor';
   };
 
-  if (sortedFeedback.length === 0) {
+  if (sortedChapters.length === 0) {
     return (
       <EmptyState 
         icon="🎭" 
-        title="No Story Craft Feedback"
-        description="Use 'Process All Chapters' in the AI Assistant panel to generate story craft assessments and improvement checklists."
+        title="No Chapters"
+        description="Add chapters to your book to see story craft feedback."
       />
     );
   }
+
+  const assessedCount = feedback.length;
 
   return (
     <div className="tab-viewer">
       <div className="tab-viewer-header">
         <h2>Story Craft Feedback</h2>
-        <p className="text-muted">{sortedFeedback.length} chapter{sortedFeedback.length !== 1 ? 's' : ''} assessed</p>
+        <p className="text-muted">
+          {sortedChapters.length} chapter{sortedChapters.length !== 1 ? 's' : ''}
+          {assessedCount > 0 && ` • ${assessedCount} assessed`}
+        </p>
       </div>
       
       <div className="storycraft-document">
-        {sortedFeedback.map((item, index) => {
-          const chapter = getChapterById(item.chapterId);
-          const isExpanded = expandedChapters.has(item.chapterId);
-          const completedCount = item.checklist.filter(c => c.isCompleted).length;
-          const totalCount = item.checklist.length;
-          const assessmentScores = item.assessment;
+        {sortedChapters.map((chapter, index) => {
+          const item = getFeedbackForChapter(chapter.id);
+          const isExpanded = expandedChapters.has(chapter.id);
+          const hasFeedback = !!item;
+          const completedCount = item ? item.checklist.filter(c => c.isCompleted).length : 0;
+          const totalCount = item ? item.checklist.length : 0;
+          const assessmentScores = item?.assessment;
           const avgScore = assessmentScores 
             ? (assessmentScores.plotProgression.score + 
                assessmentScores.characterDevelopment.score + 
@@ -926,34 +1177,150 @@ const StoryCraftView: React.FC = () => {
             : 0;
           
           return (
-            <div key={item.chapterId} className="storycraft-chapter-section">
+            <div key={chapter.id} className="storycraft-chapter-section">
               {/* Chapter Header - Always visible */}
               <div 
                 className="storycraft-chapter-header"
-                onClick={() => toggleChapter(item.chapterId)}
+                onClick={() => toggleChapter(chapter.id)}
               >
                 <div className="storycraft-header-left">
                   <ChevronIcon expanded={isExpanded} />
                   <h3 className="storycraft-chapter-title">
-                    {chapter?.title || item.chapterTitle || 'Unknown Chapter'}
+                    {chapter.title}
                   </h3>
                 </div>
-                <div className="storycraft-header-right">
-                  <span 
-                    className="storycraft-score-badge"
-                    style={{ backgroundColor: getScoreColor(avgScore) }}
-                  >
-                    {avgScore.toFixed(1)} - {getScoreLabel(avgScore)}
-                  </span>
-                  <span className="storycraft-checklist-count">
-                    {completedCount}/{totalCount} tasks
-                  </span>
+                <div className="storycraft-header-right" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  {storyCraftRunningChapterId === chapter.id && (
+                    <span
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        fontSize: '12px',
+                        color: 'var(--accent-primary)',
+                        fontWeight: 500,
+                      }}
+                    >
+                      <div className="spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }} />
+                      Analyzing…
+                    </span>
+                  )}
+                  {hasFeedback ? (
+                    <>
+                      <span 
+                        className="storycraft-score-badge"
+                        style={{ backgroundColor: getScoreColor(avgScore) }}
+                      >
+                        {avgScore.toFixed(1)} - {getScoreLabel(avgScore)}
+                      </span>
+                      <span className="storycraft-checklist-count">
+                        {completedCount}/{totalCount} tasks
+                      </span>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await handleRerunStoryCraft(chapter.id);
+                        }}
+                        disabled={!isConfigured || storyCraftRunningChapterId !== null}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '12px',
+                          backgroundColor: isConfigured && !storyCraftRunningChapterId ? 'var(--accent-primary)' : 'var(--bg-secondary)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: isConfigured && !storyCraftRunningChapterId ? 'pointer' : 'not-allowed',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                        title={!isConfigured ? 'Configure OpenAI in Settings' : storyCraftRunningChapterId ? 'Story craft analysis in progress' : 'Re-run story craft analysis (replaces existing)'}
+                      >
+                        Re-run
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (confirm(`Delete story craft analysis for ${chapter.title}?`)) {
+                            await deleteStoryCraftFeedback(chapter.id);
+                          }
+                        }}
+                        disabled={storyCraftRunningChapterId !== null}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '12px',
+                          backgroundColor: 'transparent',
+                          color: 'var(--accent-error)',
+                          border: '1px solid var(--accent-error)',
+                          borderRadius: '4px',
+                          cursor: storyCraftRunningChapterId === null ? 'pointer' : 'not-allowed',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                        title="Delete story craft analysis for this chapter"
+                      >
+                        <DeleteIcon />
+                        Delete
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                        No analysis yet
+                      </span>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await handleRerunStoryCraft(chapter.id);
+                        }}
+                        disabled={!isConfigured || storyCraftRunningChapterId !== null}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '12px',
+                          backgroundColor: isConfigured && !storyCraftRunningChapterId ? 'var(--accent-primary)' : 'var(--bg-secondary)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: isConfigured && !storyCraftRunningChapterId ? 'pointer' : 'not-allowed',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                        title={!isConfigured ? 'Configure OpenAI in Settings' : 'Run story craft analysis'}
+                      >
+                        Run analysis
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
               
               {/* Expanded Content */}
               {isExpanded && (
                 <div className="storycraft-chapter-content">
+                  {!hasFeedback ? (
+                    <div className="storycraft-summary">
+                      <h4>No story craft analysis yet</h4>
+                      <p className="summary-empty">
+                        Run analysis using the button above, or use &quot;Extract All&quot; for this chapter in the AI Assistant panel.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                  {/* Chapter Summary */}
+                  <div className="storycraft-summary">
+                    <h4>Summary</h4>
+                    {(() => {
+                      const summary = getSummaryForChapter(chapter.id, item!.summary);
+                      return summary ? (
+                        <p className="summary-text">{summary}</p>
+                      ) : (
+                        <p className="summary-empty">No summary available. Re-run analysis to generate.</p>
+                      );
+                    })()}
+                  </div>
+                  
                   {/* Assessment Scores */}
                   {assessmentScores && (
                     <div className="storycraft-assessment">
@@ -1014,7 +1381,7 @@ const StoryCraftView: React.FC = () => {
                             <input
                               type="checkbox"
                               checked={checkItem.isCompleted}
-                              onChange={(e) => handleChecklistToggle(item.chapterId, checkItem.id, e.target.checked)}
+                              onChange={(e) => handleChecklistToggle(chapter.id, checkItem.id, e.target.checked)}
                             />
                             <span className="checklist-category">[{checkItem.category}]</span>
                             <span className="checklist-text">{checkItem.suggestion}</span>
@@ -1029,20 +1396,95 @@ const StoryCraftView: React.FC = () => {
                     </div>
                   )}
                   
-                  <button 
-                    className="btn-navigate-chapter"
-                    onClick={() => navigateToChapter(item.chapterId)}
-                  >
-                    Go to Chapter →
-                  </button>
+                  {/* Promises Made - narrative setups in this chapter */}
+                  <div className="storycraft-promises">
+                    <h4>Promises Made</h4>
+                    {item.promisesMade && item.promisesMade.length > 0 ? (
+                      <div className="promises-list">
+                        {item.promisesMade.map((promise) => (
+                          <div key={promise.id} className="promise-item">
+                            <span className={`promise-type-badge ${promise.type}`}>
+                              {promise.type}
+                            </span>
+                            <div className="promise-content">
+                              <p className="promise-description">{promise.description}</p>
+                              {promise.context && (
+                                <p className="promise-context">"{promise.context}"</p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="promises-empty">No narrative promises identified in this chapter.</p>
+                    )}
+                  </div>
+                  
+                  {/* Promises Kept - resolutions from previous chapters */}
+                  <div className="storycraft-promises">
+                    <h4>Promises Kept</h4>
+                    {item.promisesKept && item.promisesKept.length > 0 ? (
+                      <div className="promises-list">
+                        {item.promisesKept.map((kept, keptIndex) => (
+                          <div key={kept.promiseId || keptIndex} className="promise-kept-item">
+                            <div className="promise-kept-header">
+                              <span className="promise-kept-badge">✓ Resolved</span>
+                              <span className="promise-kept-origin">
+                                From: {kept.chapterTitleWherePromised}
+                              </span>
+                            </div>
+                            <div className="promise-kept-content">
+                              <p className="promise-kept-original">
+                                <strong>Promise:</strong> {kept.promiseDescription}
+                              </p>
+                              <p className="promise-kept-resolution">
+                                <strong>Resolution:</strong> {kept.howKept}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="promises-empty">No previous promises resolved in this chapter.</p>
+                    )}
+                  </div>
+                  
+                  <div className="storycraft-chapter-actions">
+                    <button 
+                      className="btn-generate-variation"
+                      onClick={() => openVariationDialog(chapter.id, item!.checklist)}
+                    >
+                      <SparklesIcon />
+                      Generate Variation
+                    </button>
+                    <button 
+                      className="btn-navigate-chapter"
+                      onClick={() => navigateToChapter(chapter.id)}
+                    >
+                      Go to Chapter →
+                    </button>
+                  </div>
+                    </>
+                  )}
                 </div>
               )}
               
-              {index < sortedFeedback.length - 1 && <hr className="storycraft-divider" />}
+              {index < sortedChapters.length - 1 && <hr className="storycraft-divider" />}
             </div>
           );
         })}
       </div>
+      
+      {/* Variation Dialog */}
+      <ChapterVariationDialog
+        isOpen={variationDialogChapterId !== null}
+        onClose={() => {
+          setVariationDialogChapterId(null);
+          setVariationSuggestions([]);
+        }}
+        chapterId={variationDialogChapterId || ''}
+        prefilledSuggestions={variationSuggestions}
+      />
     </div>
   );
 };
@@ -1232,75 +1674,4 @@ const ThemesView: React.FC = () => {
     </div>
   );
 };
-
-// Custom Tab View (editable content)
-const CustomTabView: React.FC<{ tab: DocumentTab }> = ({ tab }) => {
-  const { updateDocumentTabContent } = useBookStore();
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-  
-  // Auto-resize textarea to fit content
-  const autoResize = () => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = textarea.scrollHeight + 'px';
-    }
-  };
-
-  React.useEffect(() => {
-    autoResize();
-  }, []);
-  
-  return (
-    <div className="tab-viewer">
-      <div className="tab-viewer-header">
-        <h2>{tab.title}</h2>
-        <p className="text-muted">Custom document tab</p>
-      </div>
-      <div className="tab-viewer-content custom-tab-content">
-        <textarea
-          ref={textareaRef}
-          className="custom-tab-editor"
-          placeholder="Add your notes here..."
-          defaultValue={extractTextFromContent(tab.content)}
-          onChange={(e) => {
-            autoResize();
-            // Convert text back to TipTap content
-            updateDocumentTabContent(tab.id, {
-              type: 'doc',
-              content: e.target.value.split('\n').map(line => ({
-                type: 'paragraph',
-                content: line ? [{ type: 'text', text: line }] : [],
-              })),
-            });
-          }}
-        />
-      </div>
-    </div>
-  );
-};
-
-// Empty State Component
-const EmptyState: React.FC<{ icon: string; title: string; description: string }> = ({ 
-  icon, title, description 
-}) => (
-  <div className="tab-viewer-empty">
-    <span className="empty-icon">{icon}</span>
-    <h3>{title}</h3>
-    <p>{description}</p>
-  </div>
-);
-
-// Helper to extract text from TipTap content
-function extractTextFromContent(content: any): string {
-  if (!content?.content) return '';
-  
-  return content.content
-    .map((node: any) => {
-      if (node.text) return node.text;
-      if (node.content) return extractTextFromContent(node);
-      return '';
-    })
-    .join('\n');
-}
 

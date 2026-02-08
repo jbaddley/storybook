@@ -1,7 +1,8 @@
 import JSZip from 'jszip';
 import { Book, Chapter, DocumentTab, SBKManifest, createNewBook, createDefaultDocumentTabs, DEFAULT_TIPTAP_CONTENT, DEFAULT_BOOK_SETTINGS } from '../../shared/types';
+import { databaseService } from './databaseService';
 
-const SBK_VERSION = '1.1'; // Updated to include documentTabs
+const SBK_VERSION = '1.2'; // Updated to support database export
 
 class FileService {
   /**
@@ -39,6 +40,11 @@ class FileService {
           content: chapter.content,
           order: chapter.order,
           wordCount: chapter.wordCount,
+          purpose: chapter.purpose,
+          comments: chapter.comments || [],
+          notes: chapter.notes || [],
+          originalContent: chapter.originalContent,
+          originalWordCount: chapter.originalWordCount,
           createdAt: chapter.createdAt,
           updatedAt: chapter.updatedAt,
         };
@@ -53,6 +59,10 @@ class FileService {
       extractedFolder.file('locations.json', JSON.stringify(book.extracted.locations, null, 2));
       extractedFolder.file('timeline.json', JSON.stringify(book.extracted.timeline, null, 2));
       extractedFolder.file('summaries.json', JSON.stringify(book.extracted.summaries || [], null, 2));
+      // New: Story Craft Feedback
+      extractedFolder.file('storycraft.json', JSON.stringify(book.extracted.storyCraftFeedback || [], null, 2));
+      // New: Themes and Motifs
+      extractedFolder.file('themes.json', JSON.stringify(book.extracted.themesAndMotifs || { themes: [], motifs: [], symbols: [], lastUpdated: new Date().toISOString() }, null, 2));
     }
 
     // Save document tabs
@@ -127,12 +137,23 @@ class FileService {
         const chapterFile = chaptersFolder.file(`${chapterId}.json`);
         if (chapterFile) {
           const chapterData = JSON.parse(await chapterFile.async('string'));
+          const content = chapterData.content || DEFAULT_TIPTAP_CONTENT;
+          const wordCount = chapterData.wordCount ?? 0;
+          // Variation history is DB-only; do not load from file. Set original if missing.
+          const originalContent = chapterData.originalContent ?? content;
+          const originalWordCount = chapterData.originalWordCount ?? wordCount;
           chapters.push({
             id: chapterData.id,
             title: chapterData.title,
-            content: chapterData.content || DEFAULT_TIPTAP_CONTENT,
+            content,
             order: chapterData.order,
-            wordCount: chapterData.wordCount || 0,
+            wordCount,
+            purpose: chapterData.purpose,
+            comments: chapterData.comments || [],
+            notes: chapterData.notes || [],
+            variations: [],
+            originalContent,
+            originalWordCount,
             createdAt: chapterData.createdAt,
             updatedAt: chapterData.updatedAt,
           });
@@ -142,12 +163,19 @@ class FileService {
 
     // If no chapters found, create a default one
     if (chapters.length === 0) {
+      const defaultContent = DEFAULT_TIPTAP_CONTENT;
       chapters.push({
         id: `chapter-${Date.now()}`,
         title: 'Chapter 1',
-        content: DEFAULT_TIPTAP_CONTENT,
+        content: defaultContent,
         order: 1,
         wordCount: 0,
+        purpose: undefined,
+        comments: [],
+        notes: [],
+        variations: [],
+        originalContent: defaultContent,
+        originalWordCount: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -160,6 +188,13 @@ class FileService {
       locations: [] as any[],
       timeline: [] as any[],
       summaries: [] as any[],
+      storyCraftFeedback: [] as any[],
+      themesAndMotifs: {
+        themes: [] as any[],
+        motifs: [] as any[],
+        symbols: [] as any[],
+        lastUpdated: new Date().toISOString(),
+      },
       lastExtracted: undefined as string | undefined,
     };
 
@@ -182,6 +217,18 @@ class FileService {
       const summariesFile = extractedFolder.file('summaries.json');
       if (summariesFile) {
         extracted.summaries = JSON.parse(await summariesFile.async('string'));
+      }
+
+      // New: Story Craft Feedback
+      const storyCraftFile = extractedFolder.file('storycraft.json');
+      if (storyCraftFile) {
+        extracted.storyCraftFeedback = JSON.parse(await storyCraftFile.async('string'));
+      }
+
+      // New: Themes and Motifs
+      const themesFile = extractedFolder.file('themes.json');
+      if (themesFile) {
+        extracted.themesAndMotifs = JSON.parse(await themesFile.async('string'));
       }
     }
 
@@ -221,6 +268,45 @@ class FileService {
     // If no document tabs found (older file format), create default ones
     if (documentTabs.length === 0) {
       documentTabs = createDefaultDocumentTabs();
+    } else {
+      // Migration: ensure all permanent tabs exist
+      const now = new Date().toISOString();
+      const permanentTabDefs: Array<{ id: string; title: string; icon: string; tabType: DocumentTab['tabType'] }> = [
+        { id: 'characters-tab', title: 'Characters', icon: '👤', tabType: 'characters' },
+        { id: 'locations-tab', title: 'Locations', icon: '📍', tabType: 'locations' },
+        { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
+        { id: 'summaries-tab', title: 'Summaries', icon: '📝', tabType: 'summaries' },
+        { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+        { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
+      ];
+      
+      const missingTabs = permanentTabDefs
+        .filter(pt => !documentTabs.some(et => et.tabType === pt.tabType))
+        .map(pt => ({
+          ...pt,
+          content: DEFAULT_TIPTAP_CONTENT,
+          isPermanent: true,
+          createdAt: now,
+          updatedAt: now,
+        } as DocumentTab));
+      
+      if (missingTabs.length > 0) {
+        console.log('[FileService] Adding missing permanent tabs:', missingTabs.map(t => t.title));
+        documentTabs = [...documentTabs, ...missingTabs];
+      }
+    }
+    
+    // Migration: ensure extracted data has new fields
+    if (!extracted.storyCraftFeedback) {
+      extracted.storyCraftFeedback = [];
+    }
+    if (!extracted.themesAndMotifs) {
+      extracted.themesAndMotifs = {
+        themes: [],
+        motifs: [],
+        symbols: [],
+        lastUpdated: new Date().toISOString(),
+      };
     }
 
     // Construct book object
@@ -239,6 +325,83 @@ class FileService {
     };
 
     return book;
+  }
+
+  /**
+   * Export a book from the database to .sbk format
+   * @param bookId The ID of the book in the database
+   * @returns Base64 encoded .sbk file data, or null if book not found
+   */
+  async exportBookFromDatabase(bookId: string): Promise<string | null> {
+    try {
+      // Load book from database
+      const dbBook = await databaseService.getBookById(bookId);
+      
+      if (!dbBook) {
+        console.error('[FileService] Book not found in database:', bookId);
+        return null;
+      }
+      
+      // Convert to standard format and save
+      return await this.saveBook(dbBook);
+    } catch (error) {
+      console.error('[FileService] Error exporting book from database:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Export all books for a user from the database
+   * @param userId The ID of the user
+   * @returns Array of { bookId, title, data } objects
+   */
+  async exportAllBooksFromDatabase(userId: string): Promise<Array<{ bookId: string; title: string; data: string }>> {
+    try {
+      const books = await databaseService.getBooksByUser(userId);
+      const exports: Array<{ bookId: string; title: string; data: string }> = [];
+      
+      for (const bookSummary of books) {
+        const data = await this.exportBookFromDatabase(bookSummary.id);
+        if (data) {
+          exports.push({
+            bookId: bookSummary.id,
+            title: bookSummary.title,
+            data,
+          });
+        }
+      }
+      
+      return exports;
+    } catch (error) {
+      console.error('[FileService] Error exporting all books from database:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Import a book from .sbk file to database
+   * @param base64Data The base64 encoded .sbk file
+   * @param userId The ID of the user to assign the book to
+   * @returns The book ID in the database, or null on failure
+   */
+  async importBookToDatabase(base64Data: string, userId: string): Promise<string | null> {
+    try {
+      // Load book from .sbk file
+      const book = await this.loadBook(base64Data);
+      
+      // Save to database
+      const bookId = await databaseService.createBook(userId, book);
+      
+      if (bookId) {
+        console.log('[FileService] Imported book to database:', bookId);
+        return bookId;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('[FileService] Error importing book to database:', error);
+      return null;
+    }
   }
 }
 

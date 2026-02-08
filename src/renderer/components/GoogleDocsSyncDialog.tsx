@@ -39,7 +39,13 @@ export const GoogleDocsSyncDialog: React.FC<GoogleDocsSyncDialogProps> = ({ onCl
     const loadCredentials = async () => {
       let creds: GoogleCredentials | null = null;
       
-      if (window.electronAPI?.storeGet) {
+      // Try environment credentials first (via main process)
+      if (window.electronAPI?.googleGetCredentials) {
+        creds = await window.electronAPI.googleGetCredentials();
+      }
+      
+      // Try Electron store (persists across sessions)
+      if (!creds && window.electronAPI?.storeGet) {
         creds = await window.electronAPI.storeGet('google_credentials') as GoogleCredentials | null;
       }
       

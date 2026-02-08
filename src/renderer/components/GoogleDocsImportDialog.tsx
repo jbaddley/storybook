@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { googleAuthService, GoogleCredentials } from '../services/googleAuthService';
 import { googleDocsService, GoogleDriveFile } from '../services/googleDocsService';
-import { saveAutosave } from '../services/storageService';
 import { useBookStore } from '../stores/bookStore';
 import { generateId, Chapter } from '../../shared/types';
 
@@ -67,10 +66,15 @@ export const GoogleDocsImportDialog: React.FC<GoogleDocsImportDialogProps> = ({ 
   useEffect(() => {
     const loadSavedCredentials = async () => {
       try {
-        // Try Electron store first (persists across sessions)
         let creds: GoogleCredentials | null = null;
         
-        if (window.electronAPI?.storeGet) {
+        // Try environment credentials first (via main process)
+        if (window.electronAPI?.googleGetCredentials) {
+          creds = await window.electronAPI.googleGetCredentials();
+        }
+        
+        // Try Electron store (persists across sessions)
+        if (!creds && window.electronAPI?.storeGet) {
           creds = await window.electronAPI.storeGet('google_credentials') as GoogleCredentials | null;
         }
         
@@ -263,6 +267,8 @@ export const GoogleDocsImportDialog: React.FC<GoogleDocsImportDialogProps> = ({ 
         content: ch.content,
         order: index + 1,
         wordCount: 0, // Will be calculated
+        comments: [],
+        notes: [],
         createdAt: now,
         updatedAt: now,
       }));
@@ -275,15 +281,8 @@ export const GoogleDocsImportDialog: React.FC<GoogleDocsImportDialogProps> = ({ 
         documentName: importResult.documentName,
       });
       
-      // Auto-save after import
-      setImportProgress('Saving...');
-      const state = useBookStore.getState();
-      await saveAutosave(
-        state.book,
-        { summaries: state.ai.summaries, suggestions: state.ai.suggestions },
-        state.activeChapterId
-      );
-      console.log('[Import] Auto-saved after Google Docs import');
+      // Autosave will automatically save to .sbk file when changes are detected
+      console.log('[Import] Imported from Google Docs - autosave will save to .sbk');
       
       // Close dialog on success
       onClose();

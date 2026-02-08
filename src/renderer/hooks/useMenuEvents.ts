@@ -16,6 +16,8 @@ interface MenuEventHandlers {
   onImportGoogleDocs?: () => void;
   onExportGoogleDocs?: () => void;
   onSyncGoogleDocs?: () => void;
+  onExportAllAudio?: () => void;
+  onFormatDocument?: () => void;
 }
 
 // Check if running in Electron
@@ -56,6 +58,12 @@ export function useMenuEvents(handlers: MenuEventHandlers) {
       }
       if (handlers.onSyncGoogleDocs && window.electronAPI.onMenuSyncGoogleDocs) {
         cleanups.push(window.electronAPI.onMenuSyncGoogleDocs(handlers.onSyncGoogleDocs));
+      }
+      if (handlers.onExportAllAudio && window.electronAPI.onMenuExportAllAudio) {
+        cleanups.push(window.electronAPI.onMenuExportAllAudio(handlers.onExportAllAudio));
+      }
+      if (handlers.onFormatDocument && window.electronAPI.onMenuFormatDocument) {
+        cleanups.push(window.electronAPI.onMenuFormatDocument(handlers.onFormatDocument));
       }
     }
 

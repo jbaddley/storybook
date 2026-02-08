@@ -5,13 +5,19 @@
  * Token exchange happens in main process to avoid CORS issues
  */
 
-const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+import { databaseService, DbUser } from './databaseService';
+import { dbSyncService } from './dbSyncService';
 
-// Scopes needed for Google Docs import and export
+const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
+
+// Scopes needed for Google Docs import and export + user info
 const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',      // Create/edit files created by this app
   'https://www.googleapis.com/auth/drive.readonly',  // Read all files
   'https://www.googleapis.com/auth/documents',       // Read/write Google Docs
+  'https://www.googleapis.com/auth/userinfo.email',  // Get user email
+  'https://www.googleapis.com/auth/userinfo.profile', // Get user profile
 ].join(' ');
 
 // For Desktop OAuth, use 127.0.0.1 (loopback IP) - no need to register in Google Console
@@ -29,9 +35,18 @@ export interface GoogleTokens {
   expiresAt: number;
 }
 
+export interface GoogleUserInfo {
+  id: string;
+  email: string;
+  name: string;
+  picture?: string;
+}
+
 class GoogleAuthService {
   private credentials: GoogleCredentials | null = null;
   private tokens: GoogleTokens | null = null;
+  private userInfo: GoogleUserInfo | null = null;
+  private dbUser: DbUser | null = null;
 
   /**
    * Set the Google Cloud credentials
@@ -186,7 +201,223 @@ class GoogleAuthService {
    */
   clearStoredTokens(): void {
     localStorage.removeItem('google_tokens');
+    localStorage.removeItem('google_user_info');
     this.tokens = null;
+    this.userInfo = null;
+    this.dbUser = null;
+  }
+
+  /**
+   * Fetch user info from Google
+   * Uses IPC to main process to avoid CSP issues
+   */
+  async fetchUserInfo(): Promise<GoogleUserInfo | null> {
+    if (!this.tokens?.accessToken) {
+      return null;
+    }
+
+    try {
+      // Use IPC to main process to avoid CSP blocking the request
+      if (!window.electronAPI?.googleApiGet) {
+        console.error('Electron API not available for user info fetch');
+        return null;
+      }
+
+      interface GoogleUserInfo {
+        id: string;
+        email: string;
+        name?: string;
+        picture?: string;
+      }
+
+      const data = await window.electronAPI.googleApiGet<GoogleUserInfo>({
+        url: GOOGLE_USERINFO_URL,
+        accessToken: this.tokens.accessToken,
+      });
+
+      this.userInfo = {
+        id: data.id,
+        email: data.email,
+        name: data.name || data.email,
+        picture: data.picture,
+      };
+
+      // Save to localStorage
+      localStorage.setItem('google_user_info', JSON.stringify(this.userInfo));
+
+      return this.userInfo;
+    } catch (error) {
+      console.error('Error fetching Google user info:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get current user info
+   */
+  getUserInfo(): GoogleUserInfo | null {
+    return this.userInfo;
+  }
+
+  /**
+   * Load user info from storage
+   */
+  loadUserInfo(): boolean {
+    const stored = localStorage.getItem('google_user_info');
+    if (stored) {
+      try {
+        this.userInfo = JSON.parse(stored);
+        return true;
+      } catch (e) {
+        console.error('Failed to load Google user info:', e);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Get the current database user
+   */
+  getDbUser(): DbUser | null {
+    return this.dbUser;
+  }
+
+  /**
+   * Get the current database user ID
+   */
+  getCurrentUserId(): string | null {
+    return this.dbUser?.id || null;
+  }
+
+  /**
+   * Register or update user in database after OAuth
+   * Should be called after successful token exchange
+   */
+  async registerUserInDatabase(): Promise<DbUser | null> {
+    if (!this.userInfo) {
+      // Try to fetch user info first
+      await this.fetchUserInfo();
+    }
+
+    if (!this.userInfo) {
+      console.error('Cannot register user: no user info available');
+      return null;
+    }
+
+    try {
+      const user = await databaseService.findOrCreateUserByGoogle(
+        this.userInfo.id,        // googleId
+        this.userInfo.email,     // email
+        this.userInfo.name,      // name
+        this.userInfo.picture    // picture (optional)
+      );
+
+      if (user) {
+        this.dbUser = user;
+        // Update sync service with user ID
+        dbSyncService.setCurrentUserId(user.id);
+        console.log('[GoogleAuth] User registered in database:', user.id);
+      }
+
+      return user;
+    } catch (error) {
+      console.error('Failed to register user in database:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Complete sign-in flow
+   * Fetches user info and registers in database
+   */
+  async completeSignIn(): Promise<boolean> {
+    try {
+      // Fetch user info from Google
+      const userInfo = await this.fetchUserInfo();
+      if (!userInfo) {
+        return false;
+      }
+
+      // Register in database
+      const dbUser = await this.registerUserInDatabase();
+      if (!dbUser) {
+        console.warn('[GoogleAuth] Could not register user in database (database may be unavailable)');
+        // Still return true - user can work offline
+      }
+
+      // Save tokens
+      this.saveTokens();
+
+      return true;
+    } catch (error) {
+      console.error('Error completing sign in:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Restore session on app startup
+   * Loads tokens and user info, verifies with database
+   */
+  async restoreSession(): Promise<boolean> {
+    // Load tokens
+    const hasTokens = this.loadTokens();
+    if (!hasTokens) {
+      return false;
+    }
+
+    // Load user info
+    this.loadUserInfo();
+
+    // Check if tokens are still valid
+    if (!this.isAuthenticated()) {
+      // Try to refresh
+      try {
+        await this.refreshAccessToken();
+      } catch (error) {
+        console.error('Failed to refresh token on session restore:', error);
+        this.clearStoredTokens();
+        return false;
+      }
+    }
+
+    // Re-fetch user info to ensure it's current
+    if (!this.userInfo) {
+      await this.fetchUserInfo();
+    }
+
+    // Try to connect to database and get or create user
+    if (this.userInfo) {
+      try {
+        // findOrCreateUserByGoogle will either find existing or create new user
+        const user = await databaseService.findOrCreateUserByGoogle(
+          this.userInfo.id,
+          this.userInfo.email,
+          this.userInfo.name,
+          this.userInfo.picture
+        );
+        if (user) {
+          this.dbUser = user;
+          dbSyncService.setCurrentUserId(user.id);
+        }
+      } catch (error) {
+        console.warn('[GoogleAuth] Database not available during session restore');
+        // Continue without database - user can work offline
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Full sign out - clears everything
+   */
+  fullSignOut(): void {
+    this.tokens = null;
+    this.userInfo = null;
+    this.dbUser = null;
+    this.clearStoredTokens();
+    dbSyncService.clearState();
   }
 }
 

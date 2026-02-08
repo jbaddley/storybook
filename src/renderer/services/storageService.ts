@@ -4,7 +4,7 @@
  * IndexedDB can handle 50MB+ easily (browser dependent, but much larger than localStorage)
  */
 
-import { Book, ChapterSummary, AISuggestion } from '../../shared/types';
+import { Book, ChapterSummary, AISuggestion, DocumentTab, DEFAULT_TIPTAP_CONTENT } from '../../shared/types';
 
 const DB_NAME = 'storybook_db';
 const DB_VERSION = 1;
@@ -26,7 +26,58 @@ export interface AutosaveData {
   version: number;
 }
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3; // Bumped for Story Craft and Themes tabs migration
+
+/**
+ * Migrate book data to ensure all permanent tabs exist
+ */
+function migrateBookData(book: Book): Book {
+  const now = new Date().toISOString();
+  const rawDocumentTabs = book.documentTabs || [];
+  
+  // Define all permanent tabs that should exist
+  const permanentTabDefs: Array<{ id: string; title: string; icon: string; tabType: DocumentTab['tabType'] }> = [
+    { id: 'characters-tab', title: 'Characters', icon: '👤', tabType: 'characters' },
+    { id: 'locations-tab', title: 'Locations', icon: '📍', tabType: 'locations' },
+    { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
+    { id: 'summaries-tab', title: 'Summaries', icon: '📝', tabType: 'summaries' },
+    { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+    { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
+  ];
+  
+  // Find missing permanent tabs
+  const missingTabs = permanentTabDefs
+    .filter(pt => !rawDocumentTabs.some(et => et.tabType === pt.tabType))
+    .map(pt => ({
+      ...pt,
+      content: DEFAULT_TIPTAP_CONTENT,
+      isPermanent: true,
+      createdAt: now,
+      updatedAt: now,
+    } as DocumentTab));
+  
+  if (missingTabs.length > 0) {
+    console.log('[Migration] Adding missing permanent tabs:', missingTabs.map(t => t.title));
+  }
+  
+  // Ensure extracted data has new fields
+  const updatedExtracted = {
+    ...book.extracted,
+    storyCraftFeedback: book.extracted?.storyCraftFeedback || [],
+    themesAndMotifs: book.extracted?.themesAndMotifs || {
+      themes: [],
+      motifs: [],
+      symbols: [],
+      lastUpdated: now,
+    },
+  };
+  
+  return {
+    ...book,
+    documentTabs: [...rawDocumentTabs, ...missingTabs],
+    extracted: updatedExtracted,
+  };
+}
 
 let dbInstance: IDBDatabase | null = null;
 let dbInitPromise: Promise<IDBDatabase> | null = null;
@@ -153,11 +204,13 @@ function saveToLocalStorage(
  * Load autosave from IndexedDB or localStorage
  */
 export async function loadAutosave(): Promise<AutosaveData | null> {
+  let data: AutosaveData | null = null;
+  
   // Try IndexedDB first
   try {
     const db = await initDB();
     
-    return new Promise((resolve) => {
+    data = await new Promise((resolve) => {
       const transaction = db.transaction([STORE_NAME], 'readonly');
       const store = transaction.objectStore(STORE_NAME);
       const request = store.get(AUTOSAVE_KEY);
@@ -178,8 +231,15 @@ export async function loadAutosave(): Promise<AutosaveData | null> {
     });
   } catch (error) {
     console.warn('IndexedDB not available, trying localStorage:', error);
-    return loadFromLocalStorage();
+    data = loadFromLocalStorage();
   }
+  
+  // Apply migrations to loaded data
+  if (data && data.book) {
+    data.book = migrateBookData(data.book);
+  }
+  
+  return data;
 }
 
 /**

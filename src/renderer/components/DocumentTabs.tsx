@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useBookStore } from '../stores/bookStore';
-import { DocumentTab } from '../../shared/types';
+import { DocumentTab, DEFAULT_TIPTAP_CONTENT } from '../../shared/types';
 
 // Icons
 const PlusIcon = () => (
@@ -46,6 +46,7 @@ export const DocumentTabs: React.FC<DocumentTabsProps> = ({ onTabSelect }) => {
     deleteDocumentTab,
     updateDocumentTab,
     setActiveChapter,
+    updateBookMetadata,
   } = useBookStore();
   
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -53,12 +54,44 @@ export const DocumentTabs: React.FC<DocumentTabsProps> = ({ onTabSelect }) => {
   const [isAddingTab, setIsAddingTab] = useState(false);
   const [newTabTitle, setNewTabTitle] = useState('');
 
-  // Ensure documentTabs exists (for backwards compatibility)
-  const documentTabs = book.documentTabs || [];
+  // Define all permanent tabs - these ALWAYS exist regardless of saved state
+  const permanentTabDefs: Array<{ id: string; title: string; icon: string; tabType: DocumentTab['tabType'] }> = [
+    { id: 'characters-tab', title: 'Characters', icon: '👤', tabType: 'characters' },
+    { id: 'locations-tab', title: 'Locations', icon: '📍', tabType: 'locations' },
+    { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
+    { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+    { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
+    { id: 'plotanalysis-tab', title: 'Plot Analysis', icon: '🔍', tabType: 'plotanalysis' },
+  ];
   
-  // Separate permanent and custom tabs
-  const permanentTabs = documentTabs.filter(t => t.isPermanent);
-  const customTabs = documentTabs.filter(t => !t.isPermanent);
+  const now = new Date().toISOString();
+  
+  // Create permanent tabs from definitions (always show all 6)
+  const permanentTabs: DocumentTab[] = permanentTabDefs.map(pt => {
+    // Check if we have saved content for this tab type
+    const existingTab = (book.documentTabs || []).find(t => t.tabType === pt.tabType);
+    return {
+      id: existingTab?.id || pt.id,
+      title: pt.title,
+      icon: pt.icon,
+      tabType: pt.tabType,
+      content: existingTab?.content || DEFAULT_TIPTAP_CONTENT,
+      isPermanent: true,
+      createdAt: existingTab?.createdAt || now,
+      updatedAt: existingTab?.updatedAt || now,
+    };
+  });
+  
+  // Get custom tabs from saved state
+  const customTabs = (book.documentTabs || []).filter(t => !t.isPermanent);
+  
+  // Combined for total count
+  const documentTabs = [...permanentTabs, ...customTabs];
+  
+  // Debug: log what we're rendering
+  console.log('[DocumentTabs] permanentTabs:', permanentTabs.length, permanentTabs.map(t => t.title));
+  console.log('[DocumentTabs] customTabs:', customTabs.length, customTabs.map(t => t.title));
+  console.log('[DocumentTabs] total:', documentTabs.length);
 
   const handleTabClick = (tab: DocumentTab) => {
     setActiveDocumentTab(tab.id);
@@ -115,15 +148,17 @@ export const DocumentTabs: React.FC<DocumentTabsProps> = ({ onTabSelect }) => {
   const getItemCount = (tab: DocumentTab): string => {
     switch (tab.tabType) {
       case 'characters':
-        return `${book.extracted.characters.length}`;
+        return `${book.extracted.characters?.length || 0}`;
       case 'locations':
-        return `${book.extracted.locations.length}`;
+        return `${book.extracted.locations?.length || 0}`;
       case 'timeline':
-        return `${book.extracted.timeline.length}`;
-      case 'summaries':
-        // Count chapters that have summaries
-        const { ai } = useBookStore.getState();
-        return `${ai.summaries.size}`;
+        return `${book.extracted.timeline?.length || 0}`;
+      case 'storycraft':
+        return `${book.extracted.storyCraftFeedback?.length || 0}`;
+      case 'themes':
+        const themes = book.extracted.themesAndMotifs;
+        if (!themes) return '0';
+        return `${(themes.themes?.length || 0) + (themes.motifs?.length || 0) + (themes.symbols?.length || 0)}`;
       default:
         return '';
     }

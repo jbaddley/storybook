@@ -2,8 +2,29 @@ import { app, BrowserWindow, Menu, nativeImage } from 'electron';
 import * as path from 'path';
 import * as http from 'http';
 import * as url from 'url';
-import { setupIpcHandlers } from './ipc-handlers';
+import * as dotenv from 'dotenv';
+import { setupIpcHandlers, registerAudioPlaybackProtocol } from './ipc-handlers';
 import { createApplicationMenu } from './menu';
+import { initDatabase, disconnectDatabase } from './database';
+
+// Set app name immediately so macOS menu bar shows "StoryBook" (must be before ready/menu)
+app.setName('StoryBook');
+
+// Load environment variables from .env file
+// Use explicit path for Electron main process
+const envPath = path.join(__dirname, '../../.env');
+const result = dotenv.config({ path: envPath });
+console.log('[Main] dotenv loaded from:', envPath, 'parsed:', result.parsed ? Object.keys(result.parsed).length : 0, 'variables');
+
+// Suppress EPIPE errors from stdout/stderr (happens when pipe is closed)
+process.stdout?.on?.('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') return;
+  throw err;
+});
+process.stderr?.on?.('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') return;
+  throw err;
+});
 
 let mainWindow: BrowserWindow | null = null;
 let oauthServer: http.Server | null = null;
@@ -38,7 +59,7 @@ function createWindow(): void {
 
   // Load the app
   if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.loadURL('http://localhost:4200');
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
@@ -47,6 +68,17 @@ function createWindow(): void {
   // Show window when ready
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+  });
+
+  // Context menu: prevent default and send spell params to renderer; renderer replies with sentence and we build native menu (so spell data is in sync)
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    _event.preventDefault();
+    mainWindow?.webContents.send('editor-context-menu-show', {
+      x: params.x,
+      y: params.y,
+      misspelledWord: params.misspelledWord ?? '',
+      dictionarySuggestions: params.dictionarySuggestions ?? [],
+    });
   });
 
   mainWindow.on('closed', () => {
@@ -142,7 +174,15 @@ function startOAuthServer(): void {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Initialize database (non-blocking, won't fail if DB unavailable)
+  try {
+    initDatabase();
+    console.log('[Main] Database initialized');
+  } catch (e) {
+    console.warn('[Main] Database initialization failed (will work offline):', e);
+  }
+
   // Set dock icon on macOS
   if (process.platform === 'darwin') {
     const iconPath = isDev 
@@ -167,6 +207,7 @@ app.whenReady().then(() => {
     }
   }
 
+  registerAudioPlaybackProtocol();
   createWindow();
   startOAuthServer();
 
@@ -183,11 +224,19 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('will-quit', () => {
+app.on('will-quit', async () => {
   // Clean up OAuth server
   if (oauthServer) {
     oauthServer.close();
     oauthServer = null;
+  }
+  
+  // Disconnect from database
+  try {
+    await disconnectDatabase();
+    console.log('[Main] Database disconnected');
+  } catch (e) {
+    console.warn('[Main] Database disconnect failed:', e);
   }
 });
 

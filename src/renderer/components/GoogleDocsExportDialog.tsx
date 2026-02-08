@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { googleAuthService, GoogleCredentials } from '../services/googleAuthService';
 import { googleDocsService, GoogleDriveFile } from '../services/googleDocsService';
-import { saveAutosave } from '../services/storageService';
 import { useBookStore } from '../stores/bookStore';
 
 interface GoogleDocsExportDialogProps {
@@ -69,17 +68,26 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
   const [includeLocations, setIncludeLocations] = useState(true);
   const [includeTimeline, setIncludeTimeline] = useState(true);
   const [includeSummaries, setIncludeSummaries] = useState(true);
+  const [includeStoryCraft, setIncludeStoryCraft] = useState(true);
+  const [includeThemes, setIncludeThemes] = useState(true);
+  const [includePlotAnalysis, setIncludePlotAnalysis] = useState(true);
 
   // Check authentication on mount
   useEffect(() => {
     const checkAuth = async () => {
-      // Try to load saved credentials
       let creds: GoogleCredentials | null = null;
       
-      if (window.electronAPI?.storeGet) {
+      // Try environment credentials first (via main process)
+      if (window.electronAPI?.googleGetCredentials) {
+        creds = await window.electronAPI.googleGetCredentials();
+      }
+      
+      // Try Electron store (persists across sessions)
+      if (!creds && window.electronAPI?.storeGet) {
         creds = await window.electronAPI.storeGet('google_credentials') as GoogleCredentials | null;
       }
       
+      // Fallback to localStorage
       if (!creds) {
         const savedCredentials = localStorage.getItem('google_credentials');
         if (savedCredentials) {
@@ -215,6 +223,139 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
     }).join('\n');
   };
 
+  const getStoryCraftText = (): string => {
+    const feedback = book.extracted.storyCraftFeedback;
+    if (!feedback || feedback.length === 0) return '';
+    
+    return feedback.map(item => {
+      const chapterTitle = item.chapterTitle || getChapterTitle(item.chapterId);
+      let text = `${chapterTitle}\n`;
+      
+      if (item.assessment) {
+        const avg = (item.assessment.plotProgression.score + 
+                    item.assessment.characterDevelopment.score + 
+                    item.assessment.themeReinforcement.score + 
+                    item.assessment.pacing.score + 
+                    item.assessment.conflictTension.score + 
+                    item.assessment.hookEnding.score) / 6;
+        text += `Overall Score: ${avg.toFixed(1)}/5\n`;
+        text += `• Plot: ${item.assessment.plotProgression.score}/5 - ${item.assessment.plotProgression.notes}\n`;
+        text += `• Character: ${item.assessment.characterDevelopment.score}/5 - ${item.assessment.characterDevelopment.notes}\n`;
+        text += `• Theme: ${item.assessment.themeReinforcement.score}/5 - ${item.assessment.themeReinforcement.notes}\n`;
+        text += `• Pacing: ${item.assessment.pacing.score}/5 - ${item.assessment.pacing.notes}\n`;
+      }
+      
+      const pendingItems = item.checklist?.filter(c => !c.isCompleted) || [];
+      if (pendingItems.length > 0) {
+        text += `\nPending Improvements:\n`;
+        pendingItems.forEach(ci => {
+          text += `☐ [${ci.category}] ${ci.suggestion}\n`;
+        });
+      }
+      
+      return text;
+    }).join('\n');
+  };
+
+  const getThemesText = (): string => {
+    const data = book.extracted.themesAndMotifs;
+    if (!data) return '';
+    
+    let text = '';
+    
+    if (data.themes && data.themes.length > 0) {
+      text += 'THEMES\n\n';
+      data.themes.forEach(theme => {
+        text += `${theme.name} (${theme.type})\n`;
+        text += `${theme.description}\n`;
+        if (theme.evolutionNotes) {
+          text += `Evolution: ${theme.evolutionNotes}\n`;
+        }
+        text += '\n';
+      });
+    }
+    
+    if (data.motifs && data.motifs.length > 0) {
+      text += '\nMOTIFS\n\n';
+      data.motifs.forEach(motif => {
+        text += `${motif.name}\n`;
+        text += `${motif.description}\n\n`;
+      });
+    }
+    
+    if (data.symbols && data.symbols.length > 0) {
+      text += '\nSYMBOLS\n\n';
+      data.symbols.forEach(symbol => {
+        text += `${symbol.name}: ${symbol.meaning}\n\n`;
+      });
+    }
+    
+    return text;
+  };
+
+  const getPlotAnalysisText = (): string => {
+    const analysis = book.extracted.plotErrorAnalysis;
+    if (!analysis) return '';
+    
+    let text = 'PLOT ERROR ANALYSIS\n\n';
+    text += `Generated: ${new Date(analysis.generatedAt).toLocaleString()}\n`;
+    text += `Model: ${analysis.modelUsed}\n`;
+    text += `Total Errors Found: ${analysis.errors.length}\n\n`;
+    
+    // Chapter outline
+    if (analysis.chapterAnalyses.length > 0) {
+      text += 'CHAPTER OUTLINE\n\n';
+      const sortedAnalyses = [...analysis.chapterAnalyses].sort((a, b) => a.order - b.order);
+      sortedAnalyses.forEach(ca => {
+        text += `Chapter ${ca.order}: ${ca.proposedTitle || ca.chapterTitle}\n`;
+        if (ca.roles && ca.roles.length > 0) {
+          text += `Roles: ${ca.roles.join(', ')}\n`;
+        }
+        if (ca.plotSummary) {
+          text += `Summary: ${ca.plotSummary}\n`;
+        }
+        const chapterErrors = analysis.errors.filter(e => e.affectedChapters.includes(ca.chapterId));
+        if (chapterErrors.length > 0) {
+          text += `Errors: ${chapterErrors.length}\n`;
+        }
+        text += '\n';
+      });
+    }
+    
+    // Errors by type
+    if (analysis.errors.length > 0) {
+      text += '\nERRORS BY TYPE\n\n';
+      const errorsByType = new Map<string, typeof analysis.errors>();
+      analysis.errors.forEach(error => {
+        if (!errorsByType.has(error.type)) {
+          errorsByType.set(error.type, []);
+        }
+        errorsByType.get(error.type)!.push(error);
+      });
+      
+      errorsByType.forEach((errors, type) => {
+        text += `${type.replace(/_/g, ' ').toUpperCase()} (${errors.length})\n`;
+        errors.forEach(error => {
+          text += `[${error.severity.toUpperCase()}] ${error.description}\n`;
+          if (error.context) {
+            text += `  Context: ${error.context}\n`;
+          }
+          if (error.affectedChapters.length > 0) {
+            const chapterTitles = error.affectedChapters.map(chId => {
+              const ca = analysis.chapterAnalyses.find(c => c.chapterId === chId);
+              return ca ? `Chapter ${ca.order}: ${ca.chapterTitle}` : chId;
+            });
+            text += `  Affects: ${chapterTitles.join(', ')}\n`;
+          }
+          text += '\n';
+        });
+        text += '\n';
+      });
+    }
+    
+    return text;
+  };
+
   // Handle export
   const handleExport = async () => {
     if (!fileName.trim()) {
@@ -238,12 +379,18 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
         locations?: string;
         timeline?: string;
         summaries?: string;
+        storyCraft?: string;
+        themes?: string;
+        plotAnalysis?: string;
       } = {};
 
       if (includeCharacters) references.characters = getCharactersText();
       if (includeLocations) references.locations = getLocationsText();
       if (includeTimeline) references.timeline = getTimelineText();
       if (includeSummaries) references.summaries = getSummariesText();
+      if (includeStoryCraft) references.storyCraft = getStoryCraftText();
+      if (includeThemes) references.themes = getThemesText();
+      if (includePlotAnalysis) references.plotAnalysis = getPlotAnalysisText();
 
       // Get the target folder ID
       const targetFolderId = folderPath.length > 1 
@@ -277,15 +424,8 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
         folderPath: currentFolderPath,
       });
       
-      // Auto-save after export (to persist export metadata)
-      setExportProgress('Saving...');
-      const state = useBookStore.getState();
-      await saveAutosave(
-        state.book,
-        { summaries: state.ai.summaries, suggestions: state.ai.suggestions },
-        state.activeChapterId
-      );
-      console.log('[Export] Auto-saved after Google Docs export');
+      // Autosave will automatically save to .sbk file when changes are detected
+      console.log('[Export] Exported to Google Docs - autosave will save to .sbk');
       
       setStep('success');
     } catch (err) {
@@ -444,6 +584,32 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
           {/* Configure Step */}
           {step === 'configure' && (
             <>
+              {/* Show notice if there's an existing export */}
+              {previousExport?.documentId && (
+                <div style={{
+                  padding: '12px 16px',
+                  background: 'rgba(137, 180, 250, 0.15)',
+                  borderRadius: '8px',
+                  marginBottom: '20px',
+                  fontSize: '13px',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                    <span style={{ fontSize: '16px' }}>💡</span>
+                    <div>
+                      <div style={{ color: 'var(--text-primary)', fontWeight: 500, marginBottom: '4px' }}>
+                        You already have an exported document
+                      </div>
+                      <div style={{ color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                        "{previousExport.documentName}" - Use <strong>Sync with Google Docs</strong> from the File menu to update it.
+                      </div>
+                      <div style={{ color: 'var(--text-muted)' }}>
+                        Exporting again will create a <strong>new</strong> document.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* File name */}
               <div className="form-group" style={{ marginBottom: '20px' }}>
                 <label className="form-label">Document Name</label>
@@ -594,6 +760,30 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
                     />
                     Chapter Summaries ({book.extracted.summaries?.length || 0})
                   </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={includeStoryCraft}
+                      onChange={(e) => setIncludeStoryCraft(e.target.checked)}
+                    />
+                    Story Craft Feedback ({book.extracted.storyCraftFeedback?.length || 0})
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={includeThemes}
+                      onChange={(e) => setIncludeThemes(e.target.checked)}
+                    />
+                    Themes & Motifs ({(book.extracted.themesAndMotifs?.themes?.length || 0) + (book.extracted.themesAndMotifs?.motifs?.length || 0) + (book.extracted.themesAndMotifs?.symbols?.length || 0)})
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={includePlotAnalysis}
+                      onChange={(e) => setIncludePlotAnalysis(e.target.checked)}
+                    />
+                    Plot Error Analysis {book.extracted.plotErrorAnalysis && `(${book.extracted.plotErrorAnalysis.errors.length} errors)`}
+                  </label>
                 </div>
               </div>
 
@@ -612,6 +802,9 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
                   {includeLocations && book.extracted.locations?.length > 0 && <li>Locations reference section</li>}
                   {includeTimeline && book.extracted.timeline?.length > 0 && <li>Timeline reference section</li>}
                   {includeSummaries && book.extracted.summaries?.length > 0 && <li>Chapter summaries section</li>}
+                  {includeStoryCraft && book.extracted.storyCraftFeedback?.length > 0 && <li>Story Craft Feedback section</li>}
+                  {includeThemes && (book.extracted.themesAndMotifs?.themes?.length > 0 || book.extracted.themesAndMotifs?.motifs?.length > 0) && <li>Themes & Motifs section</li>}
+                  {includePlotAnalysis && book.extracted.plotErrorAnalysis && <li>Plot Error Analysis section</li>}
                 </ul>
               </div>
             </>
@@ -672,7 +865,7 @@ export const GoogleDocsExportDialog: React.FC<GoogleDocsExportDialogProps> = ({ 
               onClick={handleExport}
               disabled={!fileName.trim() || isLoading}
             >
-              Export to Google Docs
+              {previousExport?.documentId ? 'Create New Export' : 'Export to Google Docs'}
             </button>
           )}
         </div>

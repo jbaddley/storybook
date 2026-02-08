@@ -63,7 +63,7 @@ module.exports = (env, argv) => {
       })
     ],
     devServer: {
-      port: 3000,
+      port: 4200,
       hot: false, // Disable HMR to avoid EventEmitter issues
       liveReload: true, // Use live reload instead
       headers: {

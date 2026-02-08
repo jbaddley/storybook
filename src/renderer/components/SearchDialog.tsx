@@ -88,7 +88,25 @@ export const SearchDialog: React.FC<SearchDialogProps> = ({ isOpen, onClose, edi
     return matches;
   }, [editor, caseSensitive]);
 
-  // Highlight matches using editor's search/replace
+  // Scroll to current selection (runs in rAF so DOM is updated)
+  const scrollToSelection = useCallback(() => {
+    if (!editor) return;
+    const { view } = editor;
+    const { from } = editor.state.selection;
+    const coords = view.coordsAtPos(from);
+    const scrollContainer = document.querySelector('.editor-scroll-area') as HTMLElement | null;
+    if (!scrollContainer || !coords) return;
+    const containerRect = scrollContainer.getBoundingClientRect();
+    const scrollTop = scrollContainer.scrollTop;
+    const selectionTop = coords.top - containerRect.top + scrollTop;
+    const margin = 80;
+    if (coords.top < containerRect.top + margin || coords.top > containerRect.bottom - margin) {
+      const targetScroll = selectionTop - containerRect.height / 2;
+      scrollContainer.scrollTop = Math.max(0, targetScroll);
+    }
+  }, [editor]);
+
+  // Highlight matches: set selection to first match and scroll (do NOT focus – user is typing)
   const highlightMatches = useCallback((term: string) => {
     if (!editor || !term) {
       setMatchCount(0);
@@ -101,13 +119,13 @@ export const SearchDialog: React.FC<SearchDialogProps> = ({ isOpen, onClose, edi
     
     if (matches.length > 0) {
       setCurrentMatch(1);
-      // Select first match
-      editor.commands.setTextSelection(matches[0]);
-      scrollToSelection();
+      const range = matches[0];
+      editor.chain().setTextSelection(range).run();
+      requestAnimationFrame(() => scrollToSelection());
     } else {
       setCurrentMatch(0);
     }
-  }, [editor, findMatches]);
+  }, [editor, findMatches, scrollToSelection]);
 
   // Clear highlights
   const clearHighlights = useCallback(() => {
@@ -117,54 +135,27 @@ export const SearchDialog: React.FC<SearchDialogProps> = ({ isOpen, onClose, edi
     }
   }, [editor]);
 
-  // Scroll to current selection
-  const scrollToSelection = useCallback(() => {
-    if (!editor) return;
-    
-    const { view } = editor;
-    const { from } = editor.state.selection;
-    
-    // Get the DOM coordinates of the selection
-    const coords = view.coordsAtPos(from);
-    
-    // Find the scrollable container
-    const scrollContainer = document.querySelector('.editor-scroll-area');
-    if (scrollContainer && coords) {
-      const containerRect = scrollContainer.getBoundingClientRect();
-      const scrollTop = scrollContainer.scrollTop;
-      
-      // Calculate if the selection is outside the visible area
-      if (coords.top < containerRect.top + 100 || coords.top > containerRect.bottom - 100) {
-        scrollContainer.scrollTop = scrollTop + (coords.top - containerRect.top) - containerRect.height / 2;
-      }
-    }
-  }, [editor]);
-
   // Navigate to next match
   const goToNextMatch = useCallback(() => {
     if (!editor || matchCount === 0) return;
-    
     const matches = findMatches(searchTerm);
     const nextIndex = currentMatch >= matches.length ? 0 : currentMatch;
-    
     if (matches[nextIndex]) {
-      editor.commands.setTextSelection(matches[nextIndex]);
+      editor.chain().setTextSelection(matches[nextIndex]).focus().run();
       setCurrentMatch(nextIndex + 1);
-      scrollToSelection();
+      requestAnimationFrame(() => scrollToSelection());
     }
   }, [editor, searchTerm, matchCount, currentMatch, findMatches, scrollToSelection]);
 
   // Navigate to previous match
   const goToPrevMatch = useCallback(() => {
     if (!editor || matchCount === 0) return;
-    
     const matches = findMatches(searchTerm);
     const prevIndex = currentMatch <= 1 ? matches.length - 1 : currentMatch - 2;
-    
     if (matches[prevIndex]) {
-      editor.commands.setTextSelection(matches[prevIndex]);
+      editor.chain().setTextSelection(matches[prevIndex]).focus().run();
       setCurrentMatch(prevIndex + 1);
-      scrollToSelection();
+      requestAnimationFrame(() => scrollToSelection());
     }
   }, [editor, searchTerm, matchCount, currentMatch, findMatches, scrollToSelection]);
 
@@ -464,4 +455,5 @@ if (typeof document !== 'undefined') {
   styleEl.textContent = searchStyles;
   document.head.appendChild(styleEl);
 }
+
 

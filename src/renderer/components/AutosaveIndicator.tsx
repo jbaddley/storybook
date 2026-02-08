@@ -1,15 +1,17 @@
 /**
  * AutosaveIndicator Component
- * Shows autosave status and recovery dialog
+ * Shows autosave status in the title bar
  */
 
 import React from 'react';
 import { AutosaveStatus } from '../hooks/useAutosave';
 
 // Icons
-const CloudIcon = () => (
+const SaveIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+    <polyline points="17 21 17 13 7 13 7 21"/>
+    <polyline points="7 3 7 8 15 8"/>
   </svg>
 );
 
@@ -40,14 +42,20 @@ const AlertIcon = () => (
   </svg>
 );
 
+const FileOffIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" strokeDasharray="4 2"/>
+    <polyline points="14 2 14 8 20 8"/>
+  </svg>
+);
+
 interface AutosaveIndicatorProps {
   status: AutosaveStatus;
   lastSaved: Date | null;
-  storageType?: 'indexeddb' | 'localstorage' | null;
-  saveSize?: number | null;
+  filePath?: string | null;
 }
 
-export const AutosaveIndicator: React.FC<AutosaveIndicatorProps> = ({ status, lastSaved, storageType, saveSize }) => {
+export const AutosaveIndicator: React.FC<AutosaveIndicatorProps> = ({ status, lastSaved, filePath }) => {
   const getStatusIcon = () => {
     switch (status) {
       case 'saving':
@@ -56,8 +64,10 @@ export const AutosaveIndicator: React.FC<AutosaveIndicatorProps> = ({ status, la
         return <CheckIcon />;
       case 'error':
         return <AlertIcon />;
+      case 'no-file':
+        return <FileOffIcon />;
       default:
-        return <CloudIcon />;
+        return <SaveIcon />;
     }
   };
 
@@ -69,6 +79,8 @@ export const AutosaveIndicator: React.FC<AutosaveIndicatorProps> = ({ status, la
         return 'Saved';
       case 'error':
         return 'Save failed';
+      case 'no-file':
+        return 'Not saved';
       default:
         if (lastSaved) {
           return formatRelativeTime(lastSaved);
@@ -85,21 +97,25 @@ export const AutosaveIndicator: React.FC<AutosaveIndicatorProps> = ({ status, la
         return 'autosave-saved';
       case 'error':
         return 'autosave-error';
+      case 'no-file':
+        return 'autosave-no-file';
       default:
         return '';
     }
   };
 
   const getTooltip = () => {
+    if (status === 'no-file') {
+      return 'Save your file (⌘S) to enable autosave';
+    }
     const parts: string[] = [];
+    if (filePath) {
+      // Show just the filename
+      const fileName = filePath.split('/').pop() || filePath;
+      parts.push(`File: ${fileName}`);
+    }
     if (lastSaved) {
       parts.push(`Last saved: ${lastSaved.toLocaleString()}`);
-    }
-    if (storageType) {
-      parts.push(`Storage: ${storageType === 'indexeddb' ? 'IndexedDB' : 'localStorage'}`);
-    }
-    if (saveSize) {
-      parts.push(`Size: ${formatSize(saveSize)}`);
     }
     return parts.length > 0 ? parts.join('\n') : 'Autosave enabled';
   };
@@ -108,53 +124,6 @@ export const AutosaveIndicator: React.FC<AutosaveIndicatorProps> = ({ status, la
     <div className={`autosave-indicator ${getStatusClass()}`} title={getTooltip()}>
       {getStatusIcon()}
       <span className="autosave-text">{getStatusText()}</span>
-    </div>
-  );
-};
-
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-interface RecoveryDialogProps {
-  timestamp: Date | null;
-  onRecover: () => void;
-  onDiscard: () => void;
-}
-
-export const RecoveryDialog: React.FC<RecoveryDialogProps> = ({ timestamp, onRecover, onDiscard }) => {
-  return (
-    <div className="recovery-dialog-overlay">
-      <div className="recovery-dialog">
-        <div className="recovery-dialog-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="48" height="48">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <path d="M12 18v-6"/>
-            <path d="M9 15l3 3 3-3"/>
-          </svg>
-        </div>
-        <h2>Recover Unsaved Work?</h2>
-        <p>
-          We found autosaved work from{' '}
-          <strong>{timestamp ? formatRelativeTime(timestamp) : 'a previous session'}</strong>.
-        </p>
-        <p className="recovery-dialog-detail">
-          {timestamp && `Last saved: ${timestamp.toLocaleString()}`}
-        </p>
-        <div className="recovery-dialog-actions">
-          <button className="btn-secondary" onClick={onDiscard}>
-            Start Fresh
-          </button>
-          <button className="btn-primary" onClick={onRecover}>
-            Recover Work
-          </button>
-        </div>
-      </div>
     </div>
   );
 };

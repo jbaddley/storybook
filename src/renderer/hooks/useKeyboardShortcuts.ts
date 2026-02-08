@@ -9,6 +9,7 @@ interface KeyboardShortcutsOptions {
   onExportDocx?: () => void;
   onExportPdf?: () => void;
   onShowShortcuts?: () => void;
+  onFormatDocument?: () => void;
 }
 
 export function useKeyboardShortcuts(options: KeyboardShortcutsOptions) {
@@ -104,6 +105,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions) {
     // Delete chapter (with confirmation via the UI, not directly)
     // We won't add a direct delete shortcut for safety
 
+    // Format document (Cmd+Option+L / Ctrl+Alt+L — avoid Cmd+Shift+L which opens browser/Google)
+    if (modifier && e.altKey && e.code === 'KeyL') {
+      e.preventDefault();
+      options.onFormatDocument?.();
+      return;
+    }
+
     // Show keyboard shortcuts dialog (? or F1)
     if (e.key === 'F1' || e.key === '?' || (e.shiftKey && e.key === '/')) {
       // Don't trigger ? if user is typing in an input/textarea (but F1 should always work)
@@ -165,6 +173,7 @@ export const KEYBOARD_SHORTCUTS = [
     { keys: ['Ctrl', 'V'], mac: ['⌘', 'V'], action: 'Paste' },
   ]},
   { category: 'Formatting', shortcuts: [
+    { keys: ['Ctrl', 'Alt', 'L'], mac: ['⌘', '⌥', 'L'], action: 'Format Document' },
     { keys: ['Ctrl', 'B'], mac: ['⌘', 'B'], action: 'Bold' },
     { keys: ['Ctrl', 'I'], mac: ['⌘', 'I'], action: 'Italic' },
     { keys: ['Ctrl', 'U'], mac: ['⌘', 'U'], action: 'Underline' },

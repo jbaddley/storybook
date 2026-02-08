@@ -39,6 +39,7 @@ body {
   --text-secondary: #a6adc8;
   --text-muted: #6c7086;
   --text-on-page: #1e1e2e;
+  --text-on-page-muted: #6c7086;
   
   /* Accent colors */
   --accent-primary: #89b4fa;
@@ -46,6 +47,16 @@ body {
   --accent-success: #a6e3a1;
   --accent-warning: #f9e2af;
   --accent-error: #f38ba8;
+  
+  /* Status colors with backgrounds */
+  --success-color: #a6e3a1;
+  --success-bg: rgba(166, 227, 161, 0.15);
+  --warning-color: #f9e2af;
+  --warning-bg: rgba(249, 226, 175, 0.15);
+  --error-color: #f38ba8;
+  --error-bg: rgba(243, 139, 168, 0.15);
+  --info-color: #89b4fa;
+  --info-bg: rgba(137, 180, 250, 0.15);
   
   /* Border colors */
   --border-color: #313244;
@@ -183,7 +194,16 @@ h6 { font-size: 0.875rem; }
 }
 
 .ProseMirror p {
-  margin: 0 0 1em 0;
+  margin: 0 0 0.5em 0;
+  text-indent: 0.5in;
+}
+
+/* First paragraph after heading or at start - no indent */
+.ProseMirror h1 + p,
+.ProseMirror h2 + p,
+.ProseMirror h3 + p,
+.ProseMirror > p:first-child {
+  text-indent: 0;
 }
 
 .ProseMirror h1 {

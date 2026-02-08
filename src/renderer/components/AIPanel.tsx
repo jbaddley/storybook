@@ -1,9 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { useOpenAI } from '../hooks/useOpenAI';
 import { TipTapContent, BookSettings, StoryCraftChapterFeedback, generateId } from '../../shared/types';
 import { AIChatBot } from './AIChatBot';
+import { CommentsPanel } from './CommentsPanel';
+import { NotesPanel } from './NotesPanel';
 import { openAIService } from '../services/openaiService';
+import { plotAnalysisService } from '../services/plotAnalysisService';
+import { normalizeQuotesInTipTapContent } from '../utils/quoteNormalize';
 
 // Icons
 const SparklesIcon = () => (
@@ -66,6 +70,101 @@ const ActionsIcon = () => (
   </svg>
 );
 
+const CommentsIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    <line x1="9" y1="9" x2="15" y2="9" />
+    <line x1="9" y1="13" x2="13" y2="13" />
+  </svg>
+);
+
+const NotesIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+    <line x1="16" y1="13" x2="8" y2="13" />
+    <line x1="16" y1="17" x2="8" y2="17" />
+  </svg>
+);
+
+const ChevronDownIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <polyline points="6,9 12,15 18,9" />
+  </svg>
+);
+
+const MenuIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+    <circle cx="12" cy="12" r="1" />
+    <circle cx="12" cy="5" r="1" />
+    <circle cx="12" cy="19" r="1" />
+  </svg>
+);
+
+const ImageIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+    <circle cx="8.5" cy="8.5" r="1.5"/>
+    <polyline points="21 15 16 10 5 21"/>
+  </svg>
+);
+
+/** Single actions dropdown for the AI panel header */
+export const AIPanelHeaderActions: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const { ui, setAIPanelTab } = useBookStore();
+  const activeTab = ui.aiPanelTab;
+
+  useEffect(() => {
+    const onOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    if (open) {
+      document.addEventListener('mousedown', onOutside);
+      return () => document.removeEventListener('mousedown', onOutside);
+    }
+  }, [open]);
+
+  const setTabAndClose = (tab: 'actions' | 'chat' | 'comments' | 'notes') => {
+    setAIPanelTab(tab);
+    setOpen(false);
+  };
+
+  return (
+    <div className="panel-actions-dropdown" ref={ref}>
+      <button
+        type="button"
+        className="panel-actions-dropdown-trigger panel-actions-dropdown-trigger-icon-only"
+        onClick={() => setOpen((o) => !o)}
+        title="AI panel view"
+      >
+        <MenuIcon />
+      </button>
+      {open && (
+        <div className="panel-actions-dropdown-menu">
+          <button type="button" onClick={() => setTabAndClose('actions')}>
+            <ActionsIcon />
+            Actions
+          </button>
+          <button type="button" onClick={() => setTabAndClose('chat')}>
+            <ChatIcon />
+            Chat
+          </button>
+          <button type="button" onClick={() => setTabAndClose('comments')}>
+            <CommentsIcon />
+            Comments
+          </button>
+          <button type="button" onClick={() => setTabAndClose('notes')}>
+            <NotesIcon />
+            Notes
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Book formatting utility
 interface TipTapNode {
   type: string;
@@ -84,13 +183,28 @@ interface FormatSettings {
 
 // Check if a node is effectively empty (no meaningful text content)
 function isNodeEmpty(node: TipTapNode): boolean {
+  // A node with no content array is empty
   if (!node.content || node.content.length === 0) {
     return true;
   }
   
+  // Check if any child node has comment marks - if so, it's NOT empty (preserve it)
+  const nodeStr = JSON.stringify(node);
+  if (nodeStr.includes('"type":"comment"')) {
+    console.log('[isNodeEmpty] Node has comment marks - treating as NOT empty');
+    return false;
+  }
+  
   // Check if all content is just whitespace or empty
   const textContent = getNodeTextContent(node);
-  return textContent.trim() === '';
+  const isEmpty = textContent.trim() === '';
+  
+  // Debug: if this seems wrong, log it
+  if (isEmpty && node.content.length > 0) {
+    console.log('[isNodeEmpty] Node has content array but no text:', JSON.stringify(node).substring(0, 200));
+  }
+  
+  return isEmpty;
 }
 
 // Extract all text content from a node recursively
@@ -104,7 +218,7 @@ function getNodeTextContent(node: TipTapNode): string {
   return node.content.map(child => getNodeTextContent(child)).join('');
 }
 
-// Apply font styling to text nodes
+// Apply font styling to text nodes - preserves all other marks like comments
 function applyFontToContent(
   content: TipTapNode[] | undefined, 
   fontFamily: string, 
@@ -114,14 +228,20 @@ function applyFontToContent(
   
   return content.map(node => {
     if (node.type === 'text') {
-      // Find existing textStyle mark or create one
+      // Find existing marks
       const existingMarks = node.marks || [];
-      const hasTextStyle = existingMarks.some(m => m.type === 'textStyle');
       
-      let newMarks;
+      // Separate comment marks from other marks (to preserve them exactly)
+      const commentMarks = existingMarks.filter(m => m.type === 'comment');
+      const otherMarks = existingMarks.filter(m => m.type !== 'comment');
+      
+      // Find or create textStyle mark
+      const hasTextStyle = otherMarks.some(m => m.type === 'textStyle');
+      
+      let newOtherMarks;
       if (hasTextStyle) {
         // Update existing textStyle
-        newMarks = existingMarks.map(mark => {
+        newOtherMarks = otherMarks.map(mark => {
           if (mark.type === 'textStyle') {
             return {
               ...mark,
@@ -136,8 +256,8 @@ function applyFontToContent(
         });
       } else {
         // Add textStyle mark
-        newMarks = [
-          ...existingMarks,
+        newOtherMarks = [
+          ...otherMarks,
           {
             type: 'textStyle',
             attrs: {
@@ -147,6 +267,9 @@ function applyFontToContent(
           }
         ];
       }
+      
+      // Combine: comment marks first (as they were), then other marks
+      const newMarks = [...commentMarks, ...newOtherMarks];
       
       return {
         ...node,
@@ -167,11 +290,23 @@ function applyFontToContent(
 }
 
 function formatBookContent(doc: TipTapNode, settings?: FormatSettings): TipTapNode {
-  if (!doc.content) return doc;
+  if (!doc.content) {
+    console.warn('[formatBookContent] Document has no content');
+    return doc;
+  }
+  
+  console.log('[formatBookContent] Processing', doc.content.length, 'nodes');
+  
+  // Check if any nodes have comment marks
+  const hasComments = JSON.stringify(doc).includes('"type":"comment"');
+  if (hasComments) {
+    console.log('[formatBookContent] ⚠️ Document contains comment marks - will preserve them');
+  }
   
   const formattedContent: TipTapNode[] = [];
   let previousWasHeading = false;
   let isFirstParagraph = true;
+  let skippedCount = 0;
 
   for (let i = 0; i < doc.content.length; i++) {
     const node = doc.content[i];
@@ -182,6 +317,7 @@ function formatBookContent(doc: TipTapNode, settings?: FormatSettings): TipTapNo
       
       if (isEmpty) {
         // Skip ALL empty paragraphs to remove excess whitespace
+        skippedCount++;
         continue;
       }
       
@@ -230,10 +366,12 @@ function formatBookContent(doc: TipTapNode, settings?: FormatSettings): TipTapNo
     }
     // Hard breaks - skip if between paragraphs
     else if (node.type === 'hardBreak') {
+      skippedCount++;
       continue;
     }
     // Keep other nodes as-is but apply body font
     else {
+      console.log('[formatBookContent] Keeping other node type:', node.type);
       let formattedNode = node;
       if (settings && node.content) {
         formattedNode = {
@@ -244,6 +382,14 @@ function formatBookContent(doc: TipTapNode, settings?: FormatSettings): TipTapNo
       formattedContent.push(formattedNode);
       previousWasHeading = false;
     }
+  }
+
+  console.log('[formatBookContent] Result:', formattedContent.length, 'nodes kept,', skippedCount, 'skipped');
+  
+  // Safety: if we would return empty content but input wasn't empty, return original
+  if (formattedContent.length === 0 && doc.content.length > 0) {
+    console.error('[formatBookContent] SAFETY: Would have returned empty! Returning original.');
+    return doc;
   }
 
   return {
@@ -305,6 +451,23 @@ function formatParagraph(
   };
 }
 
+// Helper to extract plain text from TipTap content
+function extractTextFromContent(content: any): string {
+  if (!content) return '';
+  
+  if (typeof content === 'string') return content;
+  
+  if (content.text) return content.text;
+  
+  if (content.content && Array.isArray(content.content)) {
+    return content.content
+      .map((node: any) => extractTextFromContent(node))
+      .join('\n');
+  }
+  
+  return '';
+}
+
 export const AIPanel: React.FC = () => {
   const { 
     ai, 
@@ -315,7 +478,20 @@ export const AIPanel: React.FC = () => {
     setSuggestions,
     addSummary,
     updateChapterContent,
-    activeChapterId
+    activeChapterId,
+    addOrUpdateStoryCraftFeedback,
+    replaceStoryCraftFeedback,
+    getStoryCraftFeedback,
+    getAllPromisesMade,
+    updateThemesAndMotifs,
+    addOrUpdateTheme,
+    addOrUpdateMotif,
+    addOrUpdateSymbol,
+    addComment,
+    clearChapterComments,
+    setPlotErrorAnalysis,
+    updateDocumentTabContent,
+    setStoryCraftRunningChapterId,
   } = useBookStore();
   
   const { 
@@ -328,11 +504,34 @@ export const AIPanel: React.FC = () => {
   } = useOpenAI();
 
   const activeChapter = getActiveChapter();
-  const [activeTab, setActiveTab] = useState<'actions' | 'chat'>('actions');
+  const { ui, setAIPanelTab, setPendingChatMessage, setChatInputPreFill, setPanelSettings } = useBookStore();
+  const activeTab = ui.aiPanelTab;
+  const pendingChatMessage = ui.pendingChatMessage;
+  const chatInputPreFill = ui.chatInputPreFill;
+  
+  // Count unresolved comments for badge
+  const unresolvedCommentCount = useMemo(() => {
+    if (!activeChapter) return 0;
+    return (activeChapter.comments || []).filter(c => !c.resolved).length;
+  }, [activeChapter]);
   const [isFormatting, setIsFormatting] = useState(false);
   const [extractionProgress, setExtractionProgress] = useState<string | null>(null);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; chapter: string } | null>(null);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [isAnalyzingPlot, setIsAnalyzingPlot] = useState(false);
+  const [plotAnalysisProgress, setPlotAnalysisProgress] = useState<string | null>(null);
+  const [isGeneratingIllustration, setIsGeneratingIllustration] = useState(false);
+  const [generatedIllustrationDataUrl, setGeneratedIllustrationDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGeneratedIllustrationDataUrl(null);
+  }, [activeChapterId]);
+
+  const handleSendCommentToChat = (text: string) => {
+    setPendingChatMessage(text);
+    setAIPanelTab('chat');
+    setPanelSettings({ showAIPanel: true });
+  };
 
   // Combined extraction - extract all at once
   const handleExtractAll = async () => {
@@ -341,7 +540,7 @@ export const AIPanel: React.FC = () => {
     setExtracting(true);
     
     try {
-      // Extract characters
+      // Extract characters (chapter stays in Story Craft list; we replace feedback when done)
       setExtractionProgress('Extracting characters...');
       await extractCharacters(activeChapter);
       
@@ -360,10 +559,301 @@ export const AIPanel: React.FC = () => {
         addSummary(summary);
       }
       
+      // Assess Story Craft with Promises Tracking
+      setExtractionProgress('Assessing story craft...');
+      setStoryCraftRunningChapterId(activeChapter.id);
+      // If chapter has no story craft feedback yet, add a placeholder so it stays visible in the list
+      const existingFeedback = getStoryCraftFeedback(activeChapter.id);
+      if (!existingFeedback) {
+        const placeholder: StoryCraftChapterFeedback = {
+          chapterId: activeChapter.id,
+          chapterTitle: activeChapter.title,
+          assessment: {
+            plotProgression: { score: 0, notes: '' },
+            characterDevelopment: { score: 0, notes: '' },
+            themeReinforcement: { score: 0, notes: '' },
+            pacing: { score: 0, notes: '' },
+            conflictTension: { score: 0, notes: '' },
+            hookEnding: { score: 0, notes: '' },
+            overallNotes: '',
+          },
+          checklist: [],
+          summary: 'Analyzing…',
+          generatedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+        replaceStoryCraftFeedback(activeChapter.id, placeholder);
+      }
+      const chapterText = extractTextFromContent(activeChapter.content);
+      const themesData = book.extracted.themesAndMotifs;
+      const themesContext = themesData?.themes.map(t => t.name).join(', ');
+      const previousPromises = getAllPromisesMade(activeChapter.order);
+      
+      let storyCraftResult;
+      try {
+        storyCraftResult = await openAIService.extractStoryCraftFeedback(
+          chapterText,
+          activeChapter.id,
+          activeChapter.title,
+          {
+            themes: themesContext,
+            previousPromises: previousPromises.length > 0 ? previousPromises : undefined,
+            bookSettings: book.settings.bookContext,
+            chapterPurpose: activeChapter.purpose,
+          }
+        );
+      } catch (err) {
+        console.error('Story craft extraction failed:', err);
+        storyCraftResult = null;
+      }
+      if (storyCraftResult) {
+        const newFeedback: StoryCraftChapterFeedback = {
+          chapterId: activeChapter.id,
+          chapterTitle: activeChapter.title,
+          assessment: storyCraftResult.assessment,
+          checklist: storyCraftResult.checklist.map(item => ({
+            id: `check-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            suggestion: item.suggestion,
+            category: item.category as 'plot' | 'character' | 'theme' | 'pacing' | 'conflict' | 'hook' | 'general',
+            isCompleted: false,
+            addedAt: new Date().toISOString(),
+          })),
+          summary: storyCraftResult.summary,
+          promisesMade: storyCraftResult.promisesMade?.map(p => ({
+            id: generateId(),
+            type: p.type,
+            description: p.description,
+            context: p.context,
+            chapterId: activeChapter.id,
+            chapterTitle: activeChapter.title,
+          })),
+          promisesKept: storyCraftResult.promisesKept?.map(p => ({
+            promiseId: p.promiseId,
+            promiseDescription: p.promiseDescription,
+            howKept: p.howKept,
+            chapterWherePromised: p.chapterWherePromised,
+            chapterTitleWherePromised: p.chapterTitleWherePromised,
+          })),
+          generatedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+        replaceStoryCraftFeedback(activeChapter.id, newFeedback);
+      } else if (!existingFeedback) {
+        // API failed and we had added a placeholder – update it so the chapter stays visible with Re-run
+        const failedPlaceholder: StoryCraftChapterFeedback = {
+          chapterId: activeChapter.id,
+          chapterTitle: activeChapter.title,
+          assessment: {
+            plotProgression: { score: 0, notes: '' },
+            characterDevelopment: { score: 0, notes: '' },
+            themeReinforcement: { score: 0, notes: '' },
+            pacing: { score: 0, notes: '' },
+            conflictTension: { score: 0, notes: '' },
+            hookEnding: { score: 0, notes: '' },
+            overallNotes: '',
+          },
+          checklist: [],
+          summary: 'Analysis failed. Click Re-run in Story Craft to try again.',
+          generatedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+        replaceStoryCraftFeedback(activeChapter.id, failedPlaceholder);
+      }
+      setStoryCraftRunningChapterId(null);
+      
+      // Generate inline comments for StoryCraft feedback
+      setExtractionProgress('Adding inline comments...');
+      const storyCraftComments = await openAIService.generateStoryCraftComments(
+        chapterText,
+        activeChapter.id,
+        activeChapter.title
+      );
+      
+      if (storyCraftComments && storyCraftComments.length > 0) {
+        // Clear existing AI comments first to avoid duplicates
+        clearChapterComments(activeChapter.id);
+        
+        // Get the TipTap editor to apply comment marks
+        const editor = (window as any).__tiptapEditor;
+        
+        // Add new comments and apply marks to the editor
+        for (const commentData of storyCraftComments) {
+          const commentId = `comment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const comment = {
+            id: commentId,
+            text: commentData.comment,
+            type: commentData.type as 'suggestion' | 'issue' | 'praise',
+            category: commentData.category as 'plot' | 'character' | 'dialogue' | 'pacing' | 'theme' | 'style' | 'general',
+            resolved: false,
+            createdAt: new Date().toISOString(),
+            createdBy: 'ai' as const,
+            targetText: commentData.targetText, // Store the target text for finding later
+          };
+          addComment(activeChapter.id, comment);
+          
+          // Apply comment mark to the editor if available
+          if (editor && commentData.targetText) {
+            const docText = editor.getText();
+            const targetText = commentData.targetText;
+            
+            // Find the position of the target text
+            let pos = docText.indexOf(targetText);
+            
+            // Try normalized match if exact match fails
+            if (pos === -1) {
+              // Simple normalization - collapse whitespace
+              const normalizedDoc = docText.replace(/\s+/g, ' ');
+              const normalizedTarget = targetText.replace(/\s+/g, ' ');
+              pos = normalizedDoc.indexOf(normalizedTarget);
+            }
+            
+            if (pos !== -1) {
+              // ProseMirror positions need to account for document structure
+              // Find actual position in the document
+              const { state } = editor;
+              let foundPos = -1;
+              let foundEnd = -1;
+              
+              state.doc.descendants((node: any, nodePos: number) => {
+                if (foundPos !== -1) return false; // Stop if found
+                if (node.isText) {
+                  const nodeText = node.text || '';
+                  const idx = nodeText.indexOf(targetText);
+                  if (idx !== -1) {
+                    foundPos = nodePos + idx;
+                    foundEnd = foundPos + targetText.length;
+                    return false;
+                  }
+                }
+                return true;
+              });
+              
+              if (foundPos !== -1 && foundEnd !== -1) {
+                editor.chain()
+                  .setTextSelection({ from: foundPos, to: foundEnd })
+                  .setMark('comment', { commentId: commentId, commentType: commentData.type })
+                  .run();
+                console.log(`[AIPanel] Applied comment mark for: "${targetText.substring(0, 30)}..."`);
+              }
+            }
+          }
+        }
+        
+        // Reset selection after applying marks
+        if (editor) {
+          editor.commands.setTextSelection(0);
+        }
+        
+        console.log(`[AIPanel] Added ${storyCraftComments.length} inline comments`);
+      }
+      
+      // Extract Themes and Motifs
+      setExtractionProgress('Extracting themes and motifs...');
+      const existingThemes = book.extracted.themesAndMotifs;
+      const themesResult = await openAIService.extractThemesAndMotifs(
+        chapterText,
+        activeChapter.id,
+        activeChapter.title,
+        existingThemes
+      );
+      if (themesResult) {
+        // Merge new themes with existing
+        const mergedThemes = [...(existingThemes?.themes || [])];
+        for (const newTheme of themesResult.themes) {
+          const existing = mergedThemes.find(t => t.name.toLowerCase() === newTheme.name.toLowerCase());
+          if (existing) {
+            // Update existing theme with new chapter reference
+            if (!existing.chapterAppearances.some(c => c.chapterId === activeChapter.id)) {
+              existing.chapterAppearances.push({
+                chapterId: activeChapter.id,
+                chapterTitle: activeChapter.title,
+                manifestation: newTheme.manifestation,
+              });
+            }
+            if (themesResult.evolutionNotes) {
+              existing.evolutionNotes = themesResult.evolutionNotes;
+            }
+          } else {
+            // Add new theme
+            mergedThemes.push({
+              id: `theme-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              name: newTheme.name,
+              description: newTheme.description,
+              type: newTheme.type,
+              chapterAppearances: [{
+                chapterId: activeChapter.id,
+                chapterTitle: activeChapter.title,
+                manifestation: newTheme.manifestation,
+              }],
+              evolutionNotes: themesResult.evolutionNotes || '',
+            });
+          }
+        }
+        
+        // Merge motifs
+        const mergedMotifs = [...(existingThemes?.motifs || [])];
+        for (const newMotif of themesResult.motifs) {
+          const existing = mergedMotifs.find(m => m.name.toLowerCase() === newMotif.name.toLowerCase());
+          if (existing) {
+            if (!existing.chapterAppearances.some(c => c.chapterId === activeChapter.id)) {
+              existing.chapterAppearances.push({
+                chapterId: activeChapter.id,
+                chapterTitle: activeChapter.title,
+                context: newMotif.context,
+              });
+            }
+          } else {
+            mergedMotifs.push({
+              id: `motif-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              name: newMotif.name,
+              description: newMotif.description,
+              chapterAppearances: [{
+                chapterId: activeChapter.id,
+                chapterTitle: activeChapter.title,
+                context: newMotif.context,
+              }],
+            });
+          }
+        }
+        
+        // Merge symbols
+        const mergedSymbols = [...(existingThemes?.symbols || [])];
+        for (const newSymbol of themesResult.symbols) {
+          const existing = mergedSymbols.find(s => s.name.toLowerCase() === newSymbol.name.toLowerCase());
+          if (existing) {
+            if (!existing.chapterAppearances.some(c => c.chapterId === activeChapter.id)) {
+              existing.chapterAppearances.push({
+                chapterId: activeChapter.id,
+                chapterTitle: activeChapter.title,
+                context: newSymbol.context,
+              });
+            }
+          } else {
+            mergedSymbols.push({
+              id: `symbol-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              name: newSymbol.name,
+              meaning: newSymbol.meaning,
+              chapterAppearances: [{
+                chapterId: activeChapter.id,
+                chapterTitle: activeChapter.title,
+                context: newSymbol.context,
+              }],
+            });
+          }
+        }
+        
+        updateThemesAndMotifs({
+          themes: mergedThemes,
+          motifs: mergedMotifs,
+          symbols: mergedSymbols,
+        });
+      }
+      
       setExtractionProgress(null);
     } catch (error) {
       console.error('Extraction failed:', error);
       setExtractionProgress(null);
+      setStoryCraftRunningChapterId(null);
     } finally {
       setExtracting(false);
     }
@@ -383,7 +873,12 @@ export const AIPanel: React.FC = () => {
 
   // Format document with standard book formatting and book font settings
   const handleFormatDocument = () => {
-    if (!activeChapter || !activeChapterId) return;
+    console.log('[Format] Starting format...', { activeChapter: !!activeChapter, activeChapterId });
+    
+    if (!activeChapter || !activeChapterId) {
+      alert('No chapter selected. Please select a chapter first.');
+      return;
+    }
     
     setIsFormatting(true);
     
@@ -391,32 +886,266 @@ export const AIPanel: React.FC = () => {
       // Get the TipTap editor instance
       const editor = (window as any).__tiptapEditor;
       if (!editor) {
-        console.error('Editor not found');
+        console.error('[Format] Editor not found');
+        alert('Editor not found. Please make sure you are viewing a chapter.');
         return;
       }
 
-      // Get current JSON content
-      const content = editor.getJSON();
+      console.log('[Format] ========== FORMAT START ==========');
       
       // Get font settings from book settings
-      const formatSettings: FormatSettings = {
-        titleFont: book.settings.titleFont || 'Carlito',
-        titleFontSize: book.settings.titleFontSize || 24,
-        bodyFont: book.settings.bodyFont || book.settings.defaultFont || 'Carlito',
-        bodyFontSize: book.settings.bodyFontSize || book.settings.defaultFontSize || 12,
+      const bodyFont = book.settings.bodyFont || book.settings.defaultFont || 'Carlito';
+      const bodyFontSize = book.settings.bodyFontSize || book.settings.defaultFontSize || 12;
+      const titleFont = book.settings.titleFont || 'Carlito';
+      const titleFontSize = book.settings.titleFontSize || 24;
+      
+      console.log('[Format] Applying fonts - Body:', bodyFont, bodyFontSize, '/ Title:', titleFont, titleFontSize);
+      
+      // ========== STEP 1: Split paragraphs at newlines and hardBreaks ==========
+      // Get current content as JSON and process it
+      const content = editor.getJSON();
+      let splitCount = 0;
+      
+      // Helper to check if paragraph contains hardBreak or newline characters
+      const hasBreaks = (paragraph: any): boolean => {
+        if (!paragraph.content) return false;
+        
+        for (const node of paragraph.content) {
+          if (node.type === 'hardBreak') return true;
+          if (node.type === 'text' && node.text && node.text.includes('\n')) return true;
+        }
+        return false;
       };
       
-      // Apply book formatting transformations with font settings
-      const formattedContent = formatBookContent(content as TipTapNode, formatSettings);
+      // Helper to split a paragraph node at hardBreaks and newlines
+      const splitParagraph = (paragraph: any): any[] => {
+        if (!paragraph.content || !hasBreaks(paragraph)) {
+          return [paragraph];
+        }
+        
+        const newParagraphs: any[] = [];
+        let currentContent: any[] = [];
+        
+        for (const node of paragraph.content) {
+          if (node.type === 'hardBreak') {
+            // End current paragraph and start a new one
+            if (currentContent.length > 0) {
+              newParagraphs.push({
+                type: 'paragraph',
+                content: currentContent
+              });
+              currentContent = [];
+            }
+          } else if (node.type === 'text' && node.text) {
+            // Check for newlines in text
+            if (node.text.includes('\n')) {
+              const parts = node.text.split('\n');
+              for (let i = 0; i < parts.length; i++) {
+                const part = parts[i].trim();
+                if (part.length > 0) {
+                  currentContent.push({
+                    type: 'text',
+                    text: part,
+                    marks: node.marks // Preserve any marks
+                  });
+                }
+                // If not the last part, end this paragraph
+                if (i < parts.length - 1 && currentContent.length > 0) {
+                  newParagraphs.push({
+                    type: 'paragraph',
+                    content: currentContent
+                  });
+                  currentContent = [];
+                }
+              }
+            } else {
+              currentContent.push(node);
+            }
+          } else {
+            currentContent.push(node);
+          }
+        }
+        
+        // Don't forget the last paragraph
+        if (currentContent.length > 0) {
+          newParagraphs.push({
+            type: 'paragraph',
+            content: currentContent
+          });
+        }
+        
+        // Count how many new paragraphs we created (minus the original)
+        if (newParagraphs.length > 1) {
+          splitCount += newParagraphs.length - 1;
+        }
+        
+        return newParagraphs.length > 0 ? newParagraphs : [paragraph];
+      };
       
-      // Update the editor with formatted content
-      editor.commands.setContent(formattedContent, false);
+      // Process all content nodes
+      const processedContent: any[] = [];
+      if (content.content) {
+        for (const node of content.content) {
+          if (node.type === 'paragraph') {
+            const splitParagraphs = splitParagraph(node);
+            processedContent.push(...splitParagraphs);
+          } else {
+            processedContent.push(node);
+          }
+        }
+      }
       
-      // Update store
-      updateChapterContent(activeChapterId, formattedContent as TipTapContent);
+      console.log('[Format] Split paragraphs, created', splitCount, 'new paragraphs');
+      
+      // ========== STEP 1.5: Remove extra empty paragraphs ==========
+      let removedCount = 0;
+      const cleanedContent: any[] = [];
+      let previousWasHeading = false;
+      let isFirstParagraph = true;
+      
+      for (const node of processedContent) {
+        if (node.type === 'paragraph') {
+          // Check if paragraph is empty
+          const isEmpty = isNodeEmpty(node as TipTapNode);
+          
+          if (isEmpty) {
+            removedCount++;
+            continue; // Skip empty paragraphs
+          }
+          
+          // Non-empty paragraph - keep it
+          cleanedContent.push(node);
+          previousWasHeading = false;
+          isFirstParagraph = false;
+        } else if (node.type === 'heading') {
+          cleanedContent.push(node);
+          previousWasHeading = true;
+        } else if (node.type === 'hardBreak') {
+          // Skip standalone hardBreaks between paragraphs
+          removedCount++;
+          continue;
+        } else {
+          cleanedContent.push(node);
+          previousWasHeading = false;
+        }
+      }
+      
+      console.log('[Format] Removed', removedCount, 'empty paragraphs/line breaks');
+      
+      // ========== STEP 1.6: Normalize quotes and apostrophes to straight ' and " ==========
+      const docWithNormalizedQuotes = normalizeQuotesInTipTapContent({ type: 'doc', content: cleanedContent });
+      
+      // Set the cleaned content back to the editor
+      editor.commands.setContent(docWithNormalizedQuotes);
+      
+      // ========== STEP 2: Apply fonts ==========
+      // Apply body font to all content
+      editor.chain()
+        .selectAll()
+        .setFontFamily(bodyFont)
+        .run();
+      
+      // Apply font size
+      editor.chain()
+        .setTextSelection({ from: 1, to: editor.state.doc.content.size - 1 })
+        .setMark('textStyle', { fontSize: `${bodyFontSize}pt` })
+        .run();
+      
+      // ========== STEP 3: Apply title font to headings ==========
+      const headingPositions: { from: number; to: number; level: number }[] = [];
+      editor.state.doc.descendants((node: { type: { name: string }; nodeSize: number; attrs: { level?: number } }, pos: number) => {
+        if (node.type.name === 'heading') {
+          headingPositions.push({
+            from: pos,
+            to: pos + node.nodeSize,
+            level: node.attrs.level || 1
+          });
+        }
+      });
+      
+      headingPositions.forEach(({ from, to, level }) => {
+        let headingFontSize = titleFontSize;
+        if (level === 2) headingFontSize = Math.round(titleFontSize * 0.85);
+        else if (level === 3) headingFontSize = Math.round(titleFontSize * 0.75);
+        else if (level >= 4) headingFontSize = Math.round(titleFontSize * 0.65);
+        
+        editor.chain()
+          .setTextSelection({ from: from + 1, to: to - 1 })
+          .setFontFamily(titleFont)
+          .setMark('textStyle', { fontSize: `${headingFontSize}pt` })
+          .run();
+      });
+      
+      // Reset selection
+      editor.commands.setTextSelection(0);
+      
+      // Get the updated content and save to store
+      const updatedContent = editor.getJSON();
+      updateChapterContent(activeChapterId, updatedContent as TipTapContent);
+      
+      console.log('[Format] ========== FORMAT END ==========');
+      console.log(`[Format] Complete: ${splitCount} paragraphs split, ${removedCount} empty lines removed, quotes normalized, fonts applied`);
       
     } finally {
       setIsFormatting(false);
+    }
+  };
+
+  // Listen for Format Document shortcut/menu (triggered from App)
+  const formatDocumentRef = useRef(handleFormatDocument);
+  formatDocumentRef.current = handleFormatDocument;
+  useEffect(() => {
+    const handler = () => formatDocumentRef.current?.();
+    window.addEventListener('storybook:format-document', handler);
+    return () => window.removeEventListener('storybook:format-document', handler);
+  }, []);
+
+  // Generate illustration from chapter (and optional text at cursor)
+  const handleGenerateIllustration = async () => {
+    if (!activeChapter || !isConfigured) return;
+    const chapterText = extractTextFromContent(activeChapter.content);
+    if (!chapterText.trim()) {
+      alert('This chapter has no text. Add some content first.');
+      return;
+    }
+    setIsGeneratingIllustration(true);
+    setGeneratedIllustrationDataUrl(null);
+    try {
+      let contextAroundCursor: string | undefined;
+      const editor = (window as any).__tiptapEditor;
+      if (editor) {
+        const { from, to } = editor.state.selection;
+        const fullText = editor.getText();
+        if (from !== to && fullText) {
+          contextAroundCursor = fullText.slice(Math.max(0, from - 2000), Math.min(fullText.length, to + 2000));
+        } else if (fullText) {
+          const contextLen = 600;
+          contextAroundCursor = fullText.slice(Math.max(0, from - contextLen), Math.min(fullText.length, from + contextLen));
+        }
+      }
+      const dataUrl = await openAIService.generateChapterIllustration(chapterText, contextAroundCursor);
+      setGeneratedIllustrationDataUrl(dataUrl);
+    } catch (err) {
+      console.error('[AIPanel] Illustration generation failed:', err);
+      alert(err instanceof Error ? err.message : 'Failed to generate illustration.');
+    } finally {
+      setIsGeneratingIllustration(false);
+    }
+  };
+
+  const handleInsertIllustration = () => {
+    if (!generatedIllustrationDataUrl) return;
+    const editor = (window as any).__tiptapEditor;
+    if (!editor) {
+      alert('Editor not available. Focus the chapter editor and try again.');
+      return;
+    }
+    try {
+      editor.chain().focus().setImage({ src: generatedIllustrationDataUrl }).run();
+      setGeneratedIllustrationDataUrl(null);
+    } catch (e) {
+      console.error('[AIPanel] Insert illustration failed:', e);
+      alert('Failed to insert image.');
     }
   };
 
@@ -427,6 +1156,8 @@ export const AIPanel: React.FC = () => {
     const confirmMsg = `This will process all ${book.chapters.length} chapters:\n\n` +
       `• Extract characters, locations, and timeline\n` +
       `• Generate chapter summaries\n` +
+      `• Analyze story craft & create improvement checklists\n` +
+      `• Extract themes, motifs, and symbols\n` +
       `• Apply standard book formatting\n\n` +
       `This may take several minutes. Continue?`;
     
@@ -454,8 +1185,8 @@ export const AIPanel: React.FC = () => {
         });
         
         console.log(`Processing chapter ${i + 1}/${totalChapters}: ${chapter.title}`);
-        
-        // 1. Format the chapter content
+
+        // 1. Format the chapter content (chapter stays in Story Craft list; we replace feedback when done)
         try {
           const formattedContent = formatBookContent(chapter.content as TipTapNode, formatSettings);
           updateChapterContent(chapter.id, formattedContent as TipTapContent);
@@ -503,18 +1234,54 @@ export const AIPanel: React.FC = () => {
         
         await new Promise(resolve => setTimeout(resolve, 500));
         
-        // 6. Extract Story Craft Feedback
+        // 6. Extract Story Craft Feedback with Promises Tracking
         try {
+          setStoryCraftRunningChapterId(chapter.id);
+          // If chapter has no story craft feedback yet, add a placeholder so it stays visible in the list
+          const existingChapterFeedback = getStoryCraftFeedback(chapter.id);
+          if (!existingChapterFeedback) {
+            const placeholder: StoryCraftChapterFeedback = {
+              chapterId: chapter.id,
+              chapterTitle: chapter.title,
+              assessment: {
+                plotProgression: { score: 0, notes: '' },
+                characterDevelopment: { score: 0, notes: '' },
+                themeReinforcement: { score: 0, notes: '' },
+                pacing: { score: 0, notes: '' },
+                conflictTension: { score: 0, notes: '' },
+                hookEnding: { score: 0, notes: '' },
+                overallNotes: '',
+              },
+              checklist: [],
+              summary: 'Analyzing…',
+              generatedAt: new Date().toISOString(),
+              lastUpdated: new Date().toISOString(),
+            };
+            replaceStoryCraftFeedback(chapter.id, placeholder);
+          }
           const chapterText = extractTextFromContent(chapter.content);
           const existingThemes = book.extracted.themesAndMotifs;
           const themesContext = existingThemes?.themes.map(t => t.name).join(', ');
           
-          const feedback = await openAIService.extractStoryCraftFeedback(
-            chapterText,
-            chapter.id,
-            chapter.title,
-            { themes: themesContext }
-          );
+          // Get all promises from previous chapters for this chapter to potentially resolve
+          const previousPromises = getAllPromisesMade(chapter.order);
+          
+          let feedback;
+          try {
+            feedback = await openAIService.extractStoryCraftFeedback(
+              chapterText,
+              chapter.id,
+              chapter.title,
+              { 
+                themes: themesContext,
+                previousPromises: previousPromises.length > 0 ? previousPromises : undefined,
+                bookSettings: book.settings.bookContext
+              }
+            );
+          } catch (err) {
+            console.error(`Failed to extract story craft feedback from ${chapter.title}:`, err);
+            feedback = null;
+          }
           
           if (feedback) {
             const storyCraftFeedback: StoryCraftChapterFeedback = {
@@ -528,13 +1295,51 @@ export const AIPanel: React.FC = () => {
                 isCompleted: false,
                 addedAt: new Date().toISOString(),
               })),
+              summary: feedback.summary,
+              promisesMade: feedback.promisesMade?.map(p => ({
+                id: generateId(),
+                type: p.type,
+                description: p.description,
+                context: p.context,
+                chapterId: chapter.id,
+                chapterTitle: chapter.title,
+              })),
+              promisesKept: feedback.promisesKept?.map(p => ({
+                promiseId: p.promiseId,
+                promiseDescription: p.promiseDescription,
+                howKept: p.howKept,
+                chapterWherePromised: p.chapterWherePromised,
+                chapterTitleWherePromised: p.chapterTitleWherePromised,
+              })),
               generatedAt: new Date().toISOString(),
               lastUpdated: new Date().toISOString(),
             };
-            addOrUpdateStoryCraftFeedback(storyCraftFeedback);
+            replaceStoryCraftFeedback(chapter.id, storyCraftFeedback);
+          } else if (!existingChapterFeedback) {
+            // API failed and we had added a placeholder – update so the chapter stays visible with Re-run
+            const failedPlaceholder: StoryCraftChapterFeedback = {
+              chapterId: chapter.id,
+              chapterTitle: chapter.title,
+              assessment: {
+                plotProgression: { score: 0, notes: '' },
+                characterDevelopment: { score: 0, notes: '' },
+                themeReinforcement: { score: 0, notes: '' },
+                pacing: { score: 0, notes: '' },
+                conflictTension: { score: 0, notes: '' },
+                hookEnding: { score: 0, notes: '' },
+                overallNotes: '',
+              },
+              checklist: [],
+              summary: 'Analysis failed. Click Re-run in Story Craft to try again.',
+              generatedAt: new Date().toISOString(),
+              lastUpdated: new Date().toISOString(),
+            };
+            replaceStoryCraftFeedback(chapter.id, failedPlaceholder);
           }
+          setStoryCraftRunningChapterId(null);
         } catch (err) {
           console.error(`Failed to extract story craft feedback from ${chapter.title}:`, err);
+          setStoryCraftRunningChapterId(null);
         }
         
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -614,55 +1419,120 @@ export const AIPanel: React.FC = () => {
     }
   };
 
+  // Analyze plot errors across entire book
+  const handleAnalyzePlotErrors = async () => {
+    if (!isConfigured || book.chapters.length === 0) return;
+
+    setIsAnalyzingPlot(true);
+    setPlotAnalysisProgress('Starting analysis...');
+
+    try {
+      const sortedChapters = [...book.chapters].sort((a, b) => a.order - b.order);
+      
+      const analysis = await plotAnalysisService.analyzeBookPlotErrors(
+        book.id,
+        sortedChapters,
+        book.extracted.summaries || [],
+        book.extracted.storyCraftFeedback || [],
+        book.settings.bookContext,
+        book.extracted.characters.map(c => ({
+          name: c.name,
+          aliases: c.aliases,
+        })),
+        book.extracted.locations.map(l => ({
+          name: l.name,
+          type: l.type,
+        })),
+        (progress) => {
+          setPlotAnalysisProgress(progress.status);
+        }
+      );
+
+      // Save to store
+      setPlotErrorAnalysis(analysis);
+
+      // Generate markdown outline
+      const markdownOutline = plotAnalysisService.generateOutline(analysis);
+
+      // Update plot analysis document tab
+      const plotAnalysisTab = book.documentTabs.find(t => t.tabType === 'plotanalysis');
+      if (plotAnalysisTab) {
+        // Convert markdown to TipTap content (simple conversion)
+        const lines = markdownOutline.split('\n');
+        const content: TipTapContent = {
+          type: 'doc',
+          content: lines.map(line => {
+            if (line.startsWith('# ')) {
+              return {
+                type: 'heading',
+                attrs: { level: 1 },
+                content: [{ type: 'text', text: line.substring(2) }],
+              };
+            } else if (line.startsWith('## ')) {
+              return {
+                type: 'heading',
+                attrs: { level: 2 },
+                content: [{ type: 'text', text: line.substring(3) }],
+              };
+            } else if (line.startsWith('### ')) {
+              return {
+                type: 'heading',
+                attrs: { level: 3 },
+                content: [{ type: 'text', text: line.substring(4) }],
+              };
+            } else if (line.trim() === '') {
+              return { type: 'paragraph', content: [] };
+            } else {
+              return {
+                type: 'paragraph',
+                content: [{ type: 'text', text: line }],
+              };
+            }
+          }).filter(node => node.type !== 'paragraph' || (node.content && node.content.length > 0)),
+        };
+        updateDocumentTabContent(plotAnalysisTab.id, content);
+      }
+
+      setPlotAnalysisProgress(null);
+    } catch (error) {
+      console.error('Plot error analysis failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('Full error:', error);
+      setPlotAnalysisProgress(`Error: ${errorMessage}`);
+      // Show error for longer so user can read it
+      setTimeout(() => {
+        setPlotAnalysisProgress(null);
+        setIsAnalyzingPlot(false);
+      }, 10000);
+      return; // Don't set isAnalyzingPlot to false here, let timeout do it
+    } finally {
+      // Only set to false if we didn't already in the catch block
+      if (plotAnalysisProgress === null || !plotAnalysisProgress.startsWith('Error:')) {
+        setIsAnalyzingPlot(false);
+      }
+    }
+  };
+
   const currentSummary = activeChapter 
     ? ai.summaries.get(activeChapter.id) 
     : undefined;
 
   return (
     <>
-      <div className="panel-header">
-        <span>AI Assistant</span>
-        {!isConfigured && (
-          <span style={{ 
-            fontSize: '10px', 
-            color: 'var(--accent-warning)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px'
-          }}>
-            <AlertCircleIcon />
-            Not configured
-          </span>
-        )}
-      </div>
-      
-      <div className="panel-content ai-panel-content">
+      <div className="ai-panel-content">
         {!isConfigured ? (
           <div className="empty-state">
             <AlertCircleIcon />
-            <p className="empty-state-text">
+            <p className="empty-state-text" style={{ marginBottom: '4px' }}>
               Please configure your OpenAI API key in Settings to use AI features.
+            </p>
+            <p className="text-muted" style={{ fontSize: '10px' }}>
+              <AlertCircleIcon /> Not configured
             </p>
           </div>
         ) : (
           <>
-            {/* Tab buttons */}
-            <div className="ai-tabs">
-              <button
-                onClick={() => setActiveTab('actions')}
-                className={`ai-tab-btn ${activeTab === 'actions' ? 'active' : ''}`}
-              >
-                <ActionsIcon />
-                Actions
-              </button>
-              <button
-                onClick={() => setActiveTab('chat')}
-                className={`ai-tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
-              >
-                <ChatIcon />
-                Chat
-              </button>
-            </div>
+            {/* View is selected via panel header Actions dropdown */}
 
             {activeTab === 'actions' && (
               <>
@@ -740,6 +1610,55 @@ export const AIPanel: React.FC = () => {
                       </p>
                     </div>
 
+                    {/* Generate Illustration */}
+                    <div className="ai-section">
+                      <div className="ai-section-title">Illustration</div>
+                      <button
+                        className="ai-btn"
+                        onClick={handleGenerateIllustration}
+                        disabled={isGeneratingIllustration}
+                        title="Generate a pen-on-paper style illustration from the chapter (uses text near cursor if available)"
+                      >
+                        {isGeneratingIllustration ? (
+                          <>
+                            <div className="spinner" />
+                            <span>Generating…</span>
+                          </>
+                        ) : (
+                          <>
+                            <ImageIcon />
+                            <span>Generate illustration</span>
+                          </>
+                        )}
+                      </button>
+                      <p className="ai-help-text">
+                        Creates a detailed pen-and-ink style illustration from this chapter.
+                        If your cursor is in the editor, the scene near the cursor is preferred.
+                        If something is described as being drawn in the chapter, that is used.
+                      </p>
+                      {generatedIllustrationDataUrl && (
+                        <div className="ai-illustration-preview">
+                          <img src={generatedIllustrationDataUrl} alt="Generated illustration" />
+                          <div className="ai-illustration-actions">
+                            <button
+                              type="button"
+                              className="ai-btn ai-btn-primary"
+                              onClick={handleInsertIllustration}
+                            >
+                              Insert at cursor
+                            </button>
+                            <button
+                              type="button"
+                              className="ai-btn"
+                              onClick={() => setGeneratedIllustrationDataUrl(null)}
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
                     {/* Process All Chapters */}
                     <div className="ai-section">
                       <div className="ai-section-title">Batch Processing</div>
@@ -766,9 +1685,37 @@ export const AIPanel: React.FC = () => {
                         )}
                       </button>
                       <p className="ai-help-text">
-                        Iterates through all {book.chapters.length} chapters: 
-                        formats text, extracts characters/locations/timeline, 
-                        and generates summaries. May take several minutes.
+                        Processes all {book.chapters.length} chapters: 
+                        formats text, extracts entities, generates summaries,
+                        analyzes story craft, and tracks themes/motifs.
+                      </p>
+                    </div>
+
+                    {/* Plot Error Analysis */}
+                    <div className="ai-section">
+                      <div className="ai-section-title">Plot Analysis</div>
+                      <button 
+                        className="ai-btn ai-btn-secondary" 
+                        onClick={handleAnalyzePlotErrors}
+                        disabled={isAnalyzingPlot || book.chapters.length === 0 || !isConfigured}
+                        title="Analyze entire book for plot errors, inconsistencies, and narrative problems"
+                      >
+                        {isAnalyzingPlot ? (
+                          <>
+                            <div className="spinner" />
+                            <span>{plotAnalysisProgress || 'Analyzing plot...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircleIcon />
+                            <span>Analyze Plot Errors</span>
+                          </>
+                        )}
+                      </button>
+                      <p className="ai-help-text">
+                        Comprehensive plot error analysis across all chapters: 
+                        identifies plot holes, timeline mistakes, character inconsistencies,
+                        name mismatches, and other narrative problems. Results appear in Plot Analysis tab.
                       </p>
                     </div>
 
@@ -849,7 +1796,20 @@ export const AIPanel: React.FC = () => {
             )}
 
             {activeTab === 'chat' && (
-              <AIChatBot />
+              <AIChatBot
+                pendingChatMessage={pendingChatMessage}
+                onConsumedPendingMessage={() => setPendingChatMessage(null)}
+                chatInputPreFill={chatInputPreFill}
+                onConsumedChatInputPreFill={() => setChatInputPreFill(null)}
+              />
+            )}
+
+            {activeTab === 'comments' && (
+              <CommentsPanel onSendToChat={handleSendCommentToChat} />
+            )}
+
+            {activeTab === 'notes' && (
+              <NotesPanel />
             )}
           </>
         )}

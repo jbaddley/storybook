@@ -10,3 +10,5 @@ release/
 .env
 .env.local
 
+# PDF test output (plan: scripts/output/)
+scripts/output/*.pdf

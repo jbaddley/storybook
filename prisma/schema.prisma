@@ -1,0 +1,425 @@
+// Prisma Schema for Storybook Editor
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// User Model - Links to Google OAuth
+// ============================================
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  googleId     String   @unique
+  picture      String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  books Book[]
+
+  @@map("users")
+}
+
+// ============================================
+// Book Model - Main entity owned by User
+// ============================================
+model Book {
+  id          String   @id @default(cuid())
+  userId      String
+  title       String
+  author      String   @default("")
+  description String   @default("") @db.Text
+  settings    Json     @default("{}")
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chapters       Chapter[]
+  documentTabs   DocumentTab[]
+  characters     Character[]
+  locations      Location[]
+  timelineEvents TimelineEvent[]
+  summaries      ChapterSummary[]
+  themes         Theme[]
+  motifs         Motif[]
+  symbols        Symbol[]
+  plotErrorAnalysis PlotErrorAnalysis?
+
+  @@index([userId])
+  @@map("books")
+}
+
+// ============================================
+// Chapter Model - Belongs to Book
+// ============================================
+model Chapter {
+  id                  String    @id @default(cuid())
+  bookId              String
+  title               String
+  content             Json      @default("{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[]}]}")
+  order               Int
+  wordCount           Int       @default(0)
+  purpose             String?   // Optional: chapter's role (setup, climax, resolution, etc.)
+  originalContent     Json?     // Content before variation was applied
+  originalWordCount   Int?
+  variationAppliedAt  DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  // Relations
+  book              Book               @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  comments          ChapterComment[]
+  notes             ChapterNote[]
+  variations        ChapterVariation[]
+  storyCraftFeedback StoryCraftFeedback?
+
+  @@index([bookId])
+  @@index([bookId, order])
+  @@map("chapters")
+}
+
+// ============================================
+// ChapterComment Model - Belongs to Chapter
+// ============================================
+model ChapterComment {
+  id         String   @id @default(cuid())
+  chapterId  String
+  text       String   @db.Text
+  type       String   // 'suggestion' | 'issue' | 'praise' | 'question' | 'note'
+  category   String?  // 'plot' | 'character' | 'dialogue' | 'pacing' | 'theme' | 'style' | 'grammar' | 'general'
+  resolved   Boolean  @default(false)
+  createdBy  String   // 'user' | 'ai'
+  targetText String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  // Relations
+  chapter Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@index([chapterId])
+  @@map("chapter_comments")
+}
+
+// ============================================
+// ChapterNote Model - Belongs to Chapter
+// ============================================
+model ChapterNote {
+  id         String   @id @default(cuid())
+  chapterId  String
+  text       String   @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relations
+  chapter Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@index([chapterId])
+  @@map("chapter_notes")
+}
+
+// ============================================
+// ChapterVariation Model - Many per Chapter (DB-only)
+// ============================================
+model ChapterVariation {
+  id                String   @id @default(cuid())
+  chapterId         String
+  content           Json
+  prompt            String   @db.Text
+  basedOnStoryCraft Boolean  @default(false)
+  wordCount         Int      @default(0)
+  generatedAt       DateTime @default(now())
+  changeReport      Json?    // Summary of what changed and why
+  sourceVariationId String?  // Which variation this was based on; null = based on chapter original
+  settings          Json?   // VariationSettings used to generate
+
+  // Relations
+  chapter Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@index([chapterId])
+  @@index([chapterId, generatedAt])
+  @@map("chapter_variations")
+}
+
+// ============================================
+// StoryCraftFeedback Model - Per-chapter assessment
+// ============================================
+model StoryCraftFeedback {
+  id           String   @id @default(cuid())
+  chapterId    String   @unique
+  chapterTitle String
+  assessment   Json     // StoryCraftAssessment
+  checklist    Json     // StoryCraftChecklistItem[]
+  summary      String?  @db.Text
+  generatedAt  DateTime @default(now())
+  lastUpdated  DateTime @updatedAt
+
+  // Relations
+  chapter      Chapter        @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  promisesMade StoryPromise[]
+  promisesKept PromiseKept[]
+
+  @@map("storycraft_feedback")
+}
+
+// ============================================
+// StoryPromise Model - Narrative promises/foreshadowing
+// ============================================
+model StoryPromise {
+  id           String @id @default(cuid())
+  feedbackId   String
+  type         String // 'foreshadowing' | 'question' | 'setup' | 'tension' | 'mystery'
+  description  String @db.Text
+  context      String @db.Text
+  chapterId    String
+  chapterTitle String
+
+  // Relations
+  feedback StoryCraftFeedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+
+  @@index([feedbackId])
+  @@map("story_promises")
+}
+
+// ============================================
+// PromiseKept Model - Tracks resolved promises
+// ============================================
+model PromiseKept {
+  id                       String @id @default(cuid())
+  feedbackId               String
+  promiseId                String
+  promiseDescription       String @db.Text
+  howKept                  String @db.Text
+  chapterWherePromised     String
+  chapterTitleWherePromised String
+
+  // Relations
+  feedback StoryCraftFeedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+
+  @@index([feedbackId])
+  @@map("promises_kept")
+}
+
+// ============================================
+// DocumentTab Model - Custom document tabs
+// ============================================
+model DocumentTab {
+  id          String   @id @default(cuid())
+  bookId      String
+  title       String
+  content     Json     @default("{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[]}]}")
+  icon        String?
+  color       String?
+  isPermanent Boolean  @default(false)
+  tabType     String   // 'custom' | 'characters' | 'locations' | 'timeline' | 'summaries' | 'storycraft' | 'themes' | 'plotanalysis'
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@map("document_tabs")
+}
+
+// ============================================
+// Character Model - Extracted character data
+// ============================================
+model Character {
+  id              String @id @default(cuid())
+  bookId          String
+  name            String
+  aliases         Json   @default("[]") // string[]
+  description     String? @db.Text
+  firstAppearance String // chapter id
+  mentions        Json   @default("[]") // ChapterMention[]
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@map("characters")
+}
+
+// ============================================
+// Location Model - Extracted location data
+// ============================================
+model Location {
+  id          String  @id @default(cuid())
+  bookId      String
+  name        String
+  description String? @db.Text
+  type        String? // city, building, country, etc.
+  mentions    Json    @default("[]") // ChapterMention[]
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@map("locations")
+}
+
+// ============================================
+// TimelineEvent Model - Extracted timeline events
+// ============================================
+model TimelineEvent {
+  id                 String  @id @default(cuid())
+  bookId             String
+  description        String  @db.Text
+  date               String? // Human-readable date
+  sortDate           String? // ISO date for sorting
+  dateType           String  // 'exact' | 'approximate' | 'relative' | 'unknown'
+  eventType          String  // 'current' | 'past' | 'future' | 'flashback'
+  chapterId          String  // chapter id where extracted
+  chapterTitle       String?
+  order              Int     // original order in narrative
+  chronologicalOrder Int?    // order in actual timeline
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@map("timeline_events")
+}
+
+// ============================================
+// ChapterSummary Model - AI-generated summaries
+// ============================================
+model ChapterSummary {
+  id          String   @id @default(cuid())
+  bookId      String
+  chapterId   String
+  summary     String   @db.Text
+  keyPoints   Json     @default("[]") // string[]
+  generatedAt DateTime @default(now())
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, chapterId])
+  @@index([bookId])
+  @@map("chapter_summaries")
+}
+
+// ============================================
+// Theme Model - Major/minor themes
+// ============================================
+model Theme {
+  id                 String @id @default(cuid())
+  bookId             String
+  name               String
+  type               String // 'major' | 'minor'
+  description        String @db.Text
+  chapterAppearances Json   @default("[]") // ThemeAppearance[]
+  evolutionNotes     String @db.Text
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@map("themes")
+}
+
+// ============================================
+// Motif Model - Recurring motifs
+// ============================================
+model Motif {
+  id                 String @id @default(cuid())
+  bookId             String
+  name               String
+  description        String @db.Text
+  chapterAppearances Json   @default("[]") // { chapterId, chapterTitle, context }[]
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@map("motifs")
+}
+
+// ============================================
+// Symbol Model - Symbolic elements
+// ============================================
+model Symbol {
+  id                 String @id @default(cuid())
+  bookId             String
+  name               String
+  meaning            String @db.Text
+  chapterAppearances Json   @default("[]") // { chapterId, chapterTitle, context }[]
+
+  // Relations
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@map("symbols")
+}
+
+// ============================================
+// PlotErrorAnalysis Model - Book-level plot analysis
+// ============================================
+model PlotErrorAnalysis {
+  id          String   @id @default(cuid())
+  bookId      String   @unique
+  modelUsed   String   // e.g., 'o1-preview', 'o3-mini'
+  generatedAt DateTime @default(now())
+  lastUpdated DateTime @updatedAt
+
+  // Relations
+  book              Book                 @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapterAnalyses   ChapterPlotAnalysis[]
+  errors            PlotError[]
+
+  @@index([bookId])
+  @@map("plot_error_analyses")
+}
+
+// ============================================
+// ChapterPlotAnalysis Model - Per-chapter plot analysis
+// ============================================
+model ChapterPlotAnalysis {
+  id              String   @id @default(cuid())
+  analysisId      String
+  chapterId       String
+  chapterTitle    String
+  proposedTitle   String?  // AI-suggested chapter title
+  roles           Json     @default("[]") // string[] - chapter roles
+  plotSummary     String?  @db.Text // Brief plot summary for this chapter
+  chapterTheme    String?  @db.Text // One sentence theme of the chapter
+  order           Int      // Chapter order in book
+
+  // Relations
+  analysis PlotErrorAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId])
+  @@index([chapterId])
+  @@map("chapter_plot_analyses")
+}
+
+// ============================================
+// PlotError Model - Individual plot errors found
+// ============================================
+model PlotError {
+  id              String   @id @default(cuid())
+  analysisId      String
+  type            String   // 'name_mismatch' | 'plot_hole' | 'timeline_mistake' | 'character_inconsistency' | 'location_mistake' | 'genre_problem' | 'feasibility_issue' | 'clarity_issue'
+  severity        String   // 'critical' | 'major' | 'minor' | 'suggestion'
+  description     String   @db.Text
+  context         String?  @db.Text // Additional context about the error
+  affectedChapters Json    @default("[]") // string[] - chapter IDs affected
+  chapterIds      Json     @default("[]") // string[] - for querying
+
+  // Relations
+  analysis PlotErrorAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId])
+  @@index([type])
+  @@map("plot_errors")
+}

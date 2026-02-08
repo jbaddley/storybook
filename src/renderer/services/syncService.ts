@@ -2,7 +2,6 @@ import { googleAuthService } from './googleAuthService';
 import { googleDocsService } from './googleDocsService';
 import { useBookStore } from '../stores/bookStore';
 import { Chapter, generateId, TipTapContent } from '../../shared/types';
-import { saveAutosave } from './storageService';
 
 class SyncService {
   private isSyncing = false;
@@ -56,6 +55,8 @@ class SyncService {
         content: ch.content,
         order: index,
         wordCount: 0,
+        comments: [],
+        notes: [],
         createdAt: now,
         updatedAt: now,
       }));
@@ -65,14 +66,8 @@ class SyncService {
         documentName,
       });
 
-      // Auto-save after import
-      const state = useBookStore.getState();
-      await saveAutosave(
-        state.book,
-        { summaries: state.ai.summaries, suggestions: state.ai.suggestions },
-        state.activeChapterId
-      );
-      console.log('[Sync] Auto-saved after pull');
+      // Autosave will automatically save to .sbk file when changes are detected
+      console.log('[Sync] Pulled from Google Docs - autosave will save to .sbk');
 
       setSyncStatus({
         isSyncing: false,
@@ -157,14 +152,8 @@ class SyncService {
         folderId,
       });
 
-      // Auto-save after push (to persist export metadata)
-      const state = useBookStore.getState();
-      await saveAutosave(
-        state.book,
-        { summaries: state.ai.summaries, suggestions: state.ai.suggestions },
-        state.activeChapterId
-      );
-      console.log('[Sync] Auto-saved after push');
+      // Autosave will automatically save to .sbk file when changes are detected
+      console.log('[Sync] Pushed to Google Docs - autosave will save to .sbk');
 
       setSyncStatus({
         isSyncing: false,

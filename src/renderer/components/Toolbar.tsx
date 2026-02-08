@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { useFileOperations } from '../hooks/useFileOperations';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
+import { UserProfileButton } from './UserProfileButton';
 
 // SVG Icons as components
 const Icons = {
@@ -174,12 +175,14 @@ const Icons = {
 interface ToolbarProps {
   editorRef?: React.RefObject<any>;
   onShowShortcuts?: () => void;
+  onShowRecovery?: () => void;
   onImportGoogleDocs?: () => void;
   onExportGoogleDocs?: () => void;
   onSyncGoogleDocs?: () => void;
+  onGoogleDriveBackup?: () => void;
 }
 
-export const Toolbar: React.FC<ToolbarProps> = ({ editorRef, onShowShortcuts, onImportGoogleDocs, onExportGoogleDocs, onSyncGoogleDocs }) => {
+export const Toolbar: React.FC<ToolbarProps> = ({ editorRef, onShowShortcuts, onShowRecovery, onImportGoogleDocs, onExportGoogleDocs, onSyncGoogleDocs, onGoogleDriveBackup }) => {
   const { ui, book, zoomIn, zoomOut, resetZoom, setSettingsOpen } = useBookStore();
   const { handleSave } = useFileOperations();
   
@@ -612,6 +615,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({ editorRef, onShowShortcuts, on
 
       <div className="toolbar-spacer" />
 
+      {/* User Profile / Sign In - prominently placed */}
+      <UserProfileButton />
+      
+      <div className="toolbar-divider" />
+
       {/* Zoom controls */}
       <div className="zoom-controls">
         <button
@@ -694,6 +702,27 @@ export const Toolbar: React.FC<ToolbarProps> = ({ editorRef, onShowShortcuts, on
         </button>
       )}
 
+      {/* Google Drive Backup */}
+      {onGoogleDriveBackup && (
+        <button
+          className="toolbar-btn"
+          onClick={onGoogleDriveBackup}
+          title="Backup to Google Drive"
+          style={{ 
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            color: '#60a5fa'
+          }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </button>
+      )}
+
       {/* Settings */}
       <button
         className="toolbar-btn"
@@ -702,6 +731,22 @@ export const Toolbar: React.FC<ToolbarProps> = ({ editorRef, onShowShortcuts, on
       >
         <Icons.Settings />
       </button>
+
+      {/* Recovery Tool */}
+      {onShowRecovery && (
+        <button
+          className="toolbar-btn"
+          onClick={onShowRecovery}
+          title="Recover Lost Data"
+          style={{ color: '#fbbf24' }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M12 7v5l4 2"/>
+          </svg>
+        </button>
+      )}
 
       {/* Help / Keyboard Shortcuts */}
       {onShowShortcuts && (

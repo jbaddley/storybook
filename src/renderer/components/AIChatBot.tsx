@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { openAIService, ChatMessage, ChatCommand, ToolCall } from '../services/openaiService';
+import { generateId, ChapterComment } from '../../shared/types';
+import { ChapterVariationDialog } from './ChapterVariationDialog';
 
 // IndexedDB for chat persistence
 const CHAT_DB_NAME = 'storybook-chat';
@@ -10,9 +12,15 @@ const CHAT_DB_VERSION = 1;
 interface StoredChat {
   id: string;
   messages: DisplayMessage[];
-  conversationHistory: ChatMessage[];
+  // Note: We no longer store conversationHistory to IndexedDB to prevent memory bloat
+  // The system prompt with chapter text was causing 60GB+ memory usage
   updatedAt: string;
 }
+
+// Maximum number of display messages to keep in history
+const MAX_DISPLAY_MESSAGES = 100;
+// Maximum number of conversation turns to send to API (excluding system prompt)
+const MAX_CONVERSATION_TURNS = 20;
 
 // Open IndexedDB
 const openChatDB = (): Promise<IDBDatabase> => {
@@ -31,17 +39,20 @@ const openChatDB = (): Promise<IDBDatabase> => {
   });
 };
 
-// Save chat to IndexedDB
-const saveChatToDB = async (bookId: string, messages: DisplayMessage[], conversationHistory: ChatMessage[]): Promise<void> => {
+// Save chat to IndexedDB - only saves display messages, NOT conversation history
+// This prevents memory bloat from storing full chapter text in every system prompt
+const saveChatToDB = async (bookId: string, messages: DisplayMessage[]): Promise<void> => {
   try {
     const db = await openChatDB();
     const transaction = db.transaction(CHAT_STORE_NAME, 'readwrite');
     const store = transaction.objectStore(CHAT_STORE_NAME);
     
+    // Trim to max messages to prevent unbounded growth
+    const trimmedMessages = messages.slice(-MAX_DISPLAY_MESSAGES);
+    
     const data: StoredChat = {
       id: bookId,
-      messages,
-      conversationHistory,
+      messages: trimmedMessages,
       updatedAt: new Date().toISOString(),
     };
     
@@ -141,7 +152,18 @@ interface DisplayMessage {
   editCount?: number;
 }
 
-export const AIChatBot: React.FC = () => {
+interface AIChatBotProps {
+  /** When set, this message is appended as a user message and sent to LLM (e.g. from Comments "Send to Chat"). */
+  pendingChatMessage?: string | null;
+  /** Called after pendingChatMessage has been added to the chat. */
+  onConsumedPendingMessage?: () => void;
+  /** When set, this text is put in the input only – user can edit before sending (e.g. from Editor "Add to chat"). */
+  chatInputPreFill?: string | null;
+  /** Called after chatInputPreFill has been applied to the input. */
+  onConsumedChatInputPreFill?: () => void;
+}
+
+export const AIChatBot: React.FC<AIChatBotProps> = ({ pendingChatMessage, onConsumedPendingMessage, chatInputPreFill, onConsumedChatInputPreFill }) => {
   const {
     book,
     getActiveChapter,
@@ -153,6 +175,7 @@ export const AIChatBot: React.FC = () => {
     updateTimelineEvent,
     updateSummary,
     setActiveChapter,
+    addComment,
   } = useBookStore();
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -161,7 +184,13 @@ export const AIChatBot: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const sendUserMessageToApiRef = useRef<((userMessage: string) => Promise<void>) | null>(null);
   const [currentModel, setCurrentModel] = useState('gpt-5.2');
+  
+  // Variation dialog state
+  const [variationDialogOpen, setVariationDialogOpen] = useState(false);
+  const [variationChatContext, setVariationChatContext] = useState('');
+  const [variationInitialPrompt, setVariationInitialPrompt] = useState('');
 
   const AI_MODELS = [
     { value: 'gpt-5.2', label: 'GPT-5.2' },
@@ -186,19 +215,62 @@ export const AIChatBot: React.FC = () => {
       if (storedChat && storedChat.messages.length > 0) {
         console.log('[ChatBot] Loaded chat from IndexedDB:', storedChat.messages.length, 'messages');
         setMessages(storedChat.messages);
-        setConversationHistory(storedChat.conversationHistory || []);
+        // Don't restore conversationHistory - it will be rebuilt fresh each message
+        // This prevents memory bloat from stored chapter text
       }
     };
     
     loadChat();
   }, [book.id]);
 
-  // Save chat to IndexedDB when messages change
-  const saveChat = useCallback(async (msgs: DisplayMessage[], history: ChatMessage[]) => {
+  // Save chat to IndexedDB when messages change - only saves display messages
+  const saveChat = useCallback(async (msgs: DisplayMessage[]) => {
     if (msgs.length > 0) {
-      await saveChatToDB(book.id, msgs, history);
+      await saveChatToDB(book.id, msgs);
     }
   }, [book.id]);
+
+  // When Comments panel sends a comment to chat, add it as a user message, clear pending, and send to LLM
+  const lastConsumedPendingRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!pendingChatMessage) {
+      lastConsumedPendingRef.current = null;
+      return;
+    }
+    if (!pendingChatMessage.trim()) return;
+    if (pendingChatMessage === lastConsumedPendingRef.current) return;
+    lastConsumedPendingRef.current = pendingChatMessage;
+    const content = pendingChatMessage.trim();
+    const userDisplayMsg: DisplayMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content,
+      timestamp: new Date(),
+    };
+    setMessages(prev => {
+      const newMsgs = [...prev, userDisplayMsg];
+      setTimeout(() => saveChat(newMsgs), 0);
+      return newMsgs;
+    });
+    onConsumedPendingMessage?.();
+    // Send to LLM (same path as user hitting Send) – will update conversationHistory when response arrives
+    sendUserMessageToApiRef.current?.(content);
+  }, [pendingChatMessage, onConsumedPendingMessage, saveChat]);
+
+  // When Editor "Add to chat" provides prefill: put text in input only (no send) so user can add context
+  const lastConsumedPreFillRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!chatInputPreFill) {
+      lastConsumedPreFillRef.current = null;
+      return;
+    }
+    if (!chatInputPreFill.trim()) return;
+    if (chatInputPreFill === lastConsumedPreFillRef.current) return;
+    lastConsumedPreFillRef.current = chatInputPreFill;
+    setInput(chatInputPreFill.trim());
+    onConsumedChatInputPreFill?.();
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }, [chatInputPreFill, onConsumedChatInputPreFill]);
 
   // Load and sync model
   useEffect(() => {
@@ -421,6 +493,58 @@ ${chapterText}
       }).join('\n')}`);
     }
 
+    // Story Craft Feedback reference (for current chapter if available)
+    const storyCraftFeedback = book.extracted.storyCraftFeedback || [];
+    if (storyCraftFeedback.length > 0 && activeChapter) {
+      const chapterFeedback = storyCraftFeedback.find(f => f.chapterId === activeChapter.id);
+      if (chapterFeedback) {
+        const a = chapterFeedback.assessment;
+        const scoreLines = [
+          `Plot progression: ${a.plotProgression.score}/5 — ${a.plotProgression.notes || '—'}`,
+          `Character development: ${a.characterDevelopment.score}/5 — ${a.characterDevelopment.notes || '—'}`,
+          `Theme reinforcement: ${a.themeReinforcement.score}/5 — ${a.themeReinforcement.notes || '—'}`,
+          `Pacing: ${a.pacing.score}/5 — ${a.pacing.notes || '—'}`,
+          `Conflict/tension: ${a.conflictTension.score}/5 — ${a.conflictTension.notes || '—'}`,
+          `Hook/ending: ${a.hookEnding.score}/5 — ${a.hookEnding.notes || '—'}`,
+        ];
+        const pendingItems = chapterFeedback.checklist.filter(c => !c.isCompleted);
+        const storyCraftParts: string[] = [
+          '## Story Craft Feedback for Current Chapter (use this when the user asks for story craft recommendations or improvements)',
+          '### Assessment scores and notes',
+          scoreLines.join('\n'),
+          a.overallNotes ? `Overall: ${a.overallNotes}` : '',
+        ].filter(Boolean);
+        if (chapterFeedback.summary) {
+          storyCraftParts.push('### Chapter summary (from Story Craft)', chapterFeedback.summary);
+        }
+        if (chapterFeedback.promisesMade?.length) {
+          storyCraftParts.push('### Promises made in this chapter', chapterFeedback.promisesMade.map(p => `- ${p.type}: ${p.description}`).join('\n'));
+        }
+        if (chapterFeedback.promisesKept?.length) {
+          storyCraftParts.push('### Promises kept (from earlier chapters)', chapterFeedback.promisesKept.map(p => `- ${p.promiseDescription} → ${p.howKept}`).join('\n'));
+        }
+        if (pendingItems.length > 0) {
+          storyCraftParts.push('### Pending improvements (prioritize these in recommendations)', pendingItems.map(i => `- [${i.category}] ${i.suggestion}`).join('\n'));
+        } else {
+          storyCraftParts.push('### Pending improvements: None.');
+        }
+        parts.push(storyCraftParts.join('\n\n'));
+      }
+    }
+
+    // Themes and Motifs reference
+    const themesData = book.extracted.themesAndMotifs;
+    if (themesData && (themesData.themes.length > 0 || themesData.motifs.length > 0 || themesData.symbols.length > 0)) {
+      const themesList = themesData.themes.map(t => `- **${t.name}** (${t.type}): ${t.description}`).join('\n');
+      const motifsList = themesData.motifs.map(m => `- **${m.name}**: ${m.description}`).join('\n');
+      const symbolsList = themesData.symbols.map(s => `- **${s.name}**: ${s.meaning}`).join('\n');
+      
+      parts.push(`## Themes & Motifs:
+${themesData.themes.length > 0 ? `**Themes:**\n${themesList}` : ''}
+${themesData.motifs.length > 0 ? `\n**Motifs:**\n${motifsList}` : ''}
+${themesData.symbols.length > 0 ? `\n**Symbols:**\n${symbolsList}` : ''}`);
+    }
+
     return parts.join('\n\n');
   };
 
@@ -456,6 +580,7 @@ Look for sections marked "## REQUESTED CHAPTER" or "## CURRENT CHAPTER" below - 
 - "what do you think", "give feedback", "critique"
 - "is this working", "does this make sense"
 - "compare chapters", "how is the pacing"
+- "look at the story craft", "story craft recommendations", "improvements based on story craft", "recommendations for improvements" (use the **Story Craft Feedback for Current Chapter** section below and give concrete recommendations tied to the scores, notes, and pending improvements)
 
 **EDIT (use replace_text tool) ONLY when user explicitly asks:**
 - "fix this", "change this", "update this", "improve this" + specific text
@@ -469,6 +594,7 @@ If unsure, ANALYZE first and ask if they want you to make the changes.
 - Review chapters for grammar, style, and flow
 - Analyze plot, characters, pacing, dialogue
 - Compare chapters to assess narrative progression
+- **Use Story Craft feedback when asked:** If the user asks for "story craft recommendations", "improvements based on story craft", or similar, use the "Story Craft Feedback for Current Chapter" section below. Reference the assessment scores and notes, the pending improvements list, and the chapter summary/promises. Give specific, actionable recommendations (and say you can implement changes with the replace_text tool if they want).
 - Make DIRECT EDITS using replace_text tool (only when explicitly asked)
 
 ## When Analyzing Chapters:
@@ -476,7 +602,8 @@ If unsure, ANALYZE first and ask if they want you to make the changes.
 2. Quote specific passages to support your analysis
 3. Give concrete, actionable suggestions
 4. Reference specific lines, dialogue, or scenes
-5. RESPOND with your full analysis - do NOT just make edits
+5. If the user asks about **story craft** or **recommendations for improvements**, base your answer on the "Story Craft Feedback for Current Chapter" section: cite the scores and notes, prioritize the pending improvements list, and suggest specific edits or additions. Then offer to apply changes if they want.
+6. RESPOND with your full analysis - do NOT just make edits
 
 ## Book Context:
 ${context}
@@ -915,21 +1042,52 @@ Use markdown formatting for readability in your responses.`;
     return successCount;
   };
 
+  // Sanitize JSON string to handle control characters that AI might include
+  const sanitizeJsonString = (jsonStr: string): string => {
+    // Replace unescaped control characters with their escaped versions
+    // This handles newlines, tabs, carriage returns, etc. inside string values
+    return jsonStr.replace(/[\x00-\x1F\x7F]/g, (char) => {
+      switch (char) {
+        case '\n': return '\\n';
+        case '\r': return '\\r';
+        case '\t': return '\\t';
+        case '\b': return '\\b';
+        case '\f': return '\\f';
+        default: return `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+      }
+    });
+  };
+
   // Execute tool calls from OpenAI
-  const executeToolCalls = (toolCalls: ToolCall[]): { successCount: number; editedLines: number[]; changes: string[] } => {
+  const executeToolCalls = (toolCalls: ToolCall[]): { successCount: number; editedLines: number[]; changes: string[]; attemptedChanges: Array<{find: string; replace: string; chapterId: string; error?: string}> } => {
     let successCount = 0;
     const editedLines: number[] = [];
     const changes: string[] = []; // Track actual changes made
+    const attemptedChanges: Array<{find: string; replace: string; chapterId: string; error?: string}> = []; // Track ALL attempted changes
     
     for (const toolCall of toolCalls) {
       try {
-        const args = JSON.parse(toolCall.function.arguments);
+        // Sanitize JSON to handle control characters the AI might include
+        const sanitizedArgs = sanitizeJsonString(toolCall.function.arguments);
+        let args;
+        try {
+          args = JSON.parse(sanitizedArgs);
+        } catch (parseError) {
+          console.error('[ChatBot] Failed to parse tool arguments even after sanitization:', parseError);
+          console.error('[ChatBot] Raw arguments:', toolCall.function.arguments.substring(0, 500));
+          changes.push(`✗ Failed to parse AI response: invalid JSON`);
+          continue;
+        }
         console.log(`[ChatBot] 🔧 Executing tool: ${toolCall.function.name}`);
         console.log(`[ChatBot] Arguments:`, JSON.stringify(args, null, 2));
         
         switch (toolCall.function.name) {
           case 'replace_text':
             if (args.chapter_id && args.find_text && args.replace_with !== undefined) {
+              // Track this attempt
+              const attempt = { find: args.find_text, replace: args.replace_with, chapterId: args.chapter_id, error: undefined as string | undefined };
+              attemptedChanges.push(attempt);
+              
               // Try to find chapter by ID
               let chapter = book.chapters.find(c => c.id === args.chapter_id);
               
@@ -1053,12 +1211,14 @@ Use markdown formatting for readability in your responses.`;
                       } else {
                         console.warn(`[ChatBot] ❌ Could not find text to replace`);
                         changes.push(`✗ Not found: "${findText.substring(0, 40)}..."`);
+                        attempt.error = 'Text not found in document';
                       }
                     }
                   } else {
                     console.warn(`[ChatBot] ❌ Text not found in editor`);
                     console.warn(`[ChatBot] Editor text preview:`, docText.substring(0, 300));
                     changes.push(`✗ Not found: "${findText.substring(0, 40)}..."`);
+                    attempt.error = 'Text not found in editor';
                   }
                 } else {
                   // Fallback: Update chapter content in store (for non-active chapters)
@@ -1102,16 +1262,21 @@ Use markdown formatting for readability in your responses.`;
                       updateChapterContent(chapter.id, result.node);
                       editedLines.push(lineNumber);
                       successCount++;
+                      changes.push(`✓ "${args.find_text.substring(0, 40)}..." → "${args.replace_with.substring(0, 40)}..."`);
                       console.log(`[ChatBot] ✅ Replaced via normalized match`);
                     } else {
                       console.warn(`[ChatBot] ❌ Could not find text to replace`);
                       console.warn(`[ChatBot] Looking for: "${args.find_text}"`);
+                      changes.push(`✗ Not found: "${args.find_text.substring(0, 40)}..."`);
+                      attempt.error = 'Text not found in chapter content';
                     }
                   }
                 }
               } else {
                 console.warn(`[ChatBot] ❌ Could not find chapter "${args.chapter_id}"`);
                 console.warn(`[ChatBot] Available chapters:`, book.chapters.map(c => `"${c.title}" (${c.id})`).join(', '));
+                changes.push(`✗ Chapter not found: "${args.chapter_id}"`);
+                attempt.error = `Chapter not found: ${args.chapter_id}`;
               }
             }
             break;
@@ -1147,6 +1312,87 @@ Use markdown formatting for readability in your responses.`;
               successCount++;
             }
             break;
+            
+          case 'add_comment':
+            if (args.chapter_id && args.target_text && args.comment_text && args.comment_type) {
+              // Find chapter
+              let chapter = book.chapters.find(c => c.id === args.chapter_id);
+              
+              // Fallback: try by chapter number
+              if (!chapter) {
+                const chapterNum = parseInt(args.chapter_id.replace(/\D/g, ''), 10);
+                if (!isNaN(chapterNum) && chapterNum > 0) {
+                  chapter = book.chapters[chapterNum - 1];
+                }
+              }
+              
+              // Fallback: find text in any chapter
+              if (!chapter) {
+                for (const ch of book.chapters) {
+                  const chapterText = extractText(ch.content);
+                  if (chapterText.includes(args.target_text) || normalizeText(chapterText).includes(normalizeText(args.target_text))) {
+                    chapter = ch;
+                    break;
+                  }
+                }
+              }
+              
+              if (chapter) {
+                // Create the comment with targetText for later reference
+                const comment: ChapterComment = {
+                  id: generateId(),
+                  text: args.comment_text,
+                  type: args.comment_type as ChapterComment['type'],
+                  category: args.category as ChapterComment['category'],
+                  resolved: false,
+                  createdAt: new Date().toISOString(),
+                  createdBy: 'ai',
+                  targetText: args.target_text, // Store for scrolling to comment later
+                };
+                
+                // Add comment to chapter
+                addComment(chapter.id, comment);
+                
+                // Add comment mark to editor content
+                const editor = (window as any).__tiptapEditor;
+                const isActiveChapter = chapter.id === getActiveChapter()?.id;
+                
+                if (editor && isActiveChapter) {
+                  const docText = editor.getText();
+                  const targetText = args.target_text;
+                  
+                  // Find position in editor
+                  let pos = docText.indexOf(targetText);
+                  if (pos === -1) {
+                    // Try normalized match
+                    const normalizedDoc = normalizeText(docText);
+                    const normalizedTarget = normalizeText(targetText);
+                    pos = normalizedDoc.indexOf(normalizedTarget);
+                  }
+                  
+                  if (pos !== -1) {
+                    // Apply comment mark to the text
+                    const from = pos + 1; // ProseMirror positions are 1-indexed
+                    const to = from + targetText.length;
+                    
+                    editor.chain()
+                      .setTextSelection({ from, to })
+                      .setMark('comment', { commentId: comment.id, commentType: comment.type })
+                      .run();
+                    
+                    console.log(`[ChatBot] ✅ Added comment mark at position ${from}-${to}`);
+                  }
+                }
+                
+                successCount++;
+                changes.push(`💬 Added ${args.comment_type}: "${args.comment_text.substring(0, 40)}..."`);
+                console.log(`[ChatBot] ✅ Added comment to chapter "${chapter.title}"`);
+              } else {
+                console.warn(`[ChatBot] ⚠️ Could not find chapter for comment`);
+                changes.push(`✗ Failed to add comment: chapter not found`);
+              }
+            }
+            break;
         }
       } catch (err) {
         console.error('[ChatBot] ❌ Failed to execute tool call:', toolCall, err);
@@ -1160,7 +1406,7 @@ Use markdown formatting for readability in your responses.`;
       }));
     }
     
-    return { successCount, editedLines, changes };
+    return { successCount, editedLines, changes, attemptedChanges };
   };
 
   // Parse commands from AI response (legacy fallback)
@@ -1181,27 +1427,179 @@ Use markdown formatting for readability in your responses.`;
     return { cleanResponse, commands };
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
-
-    const userMessage = input.trim();
-    setInput('');
-
-    // Add user message to display
-    const userDisplayMsg: DisplayMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: userMessage,
+  // Collect recent chat suggestions from conversation
+  const collectChatSuggestions = (): string => {
+    // Get the last few assistant messages that likely contain suggestions
+    const recentAssistantMessages = messages
+      .filter(m => m.role === 'assistant')
+      .slice(-5) // Last 5 assistant messages
+      .map(m => m.content)
+      .join('\n\n---\n\n');
+    
+    return recentAssistantMessages;
+  };
+  
+  // Check if message is requesting a chapter variation
+  const isVariationRequest = (message: string): { isVariation: boolean; prompt?: string } => {
+    const lowerMessage = message.toLowerCase();
+    
+    // Patterns that indicate variation generation request
+    const variationPatterns = [
+      /generate\s+(?:a\s+)?variation/i,
+      /create\s+(?:a\s+)?variation/i,
+      /make\s+(?:a\s+)?variation/i,
+      /rewrite\s+(?:the\s+)?(?:this\s+)?chapter/i,
+      /generate\s+(?:a\s+)?rewrite/i,
+      /create\s+(?:an?\s+)?alternative\s+version/i,
+      /apply\s+(?:these\s+)?(?:your\s+)?suggestions\s+(?:to\s+)?(?:the\s+)?(?:whole\s+)?chapter/i,
+      /implement\s+(?:these\s+)?(?:your\s+)?suggestions\s+(?:in\s+)?(?:a\s+)?variation/i,
+      /use\s+(?:these\s+)?(?:your\s+)?(?:chat\s+)?suggestions\s+to\s+(?:generate|create|make)/i,
+    ];
+    
+    for (const pattern of variationPatterns) {
+      if (pattern.test(message)) {
+        // Extract any additional prompt/instructions from the message
+        const prompt = message
+          .replace(pattern, '')
+          .replace(/^[\s,.:]+/, '')
+          .trim();
+        return { isVariation: true, prompt: prompt || undefined };
+      }
+    }
+    
+    return { isVariation: false };
+  };
+  
+  // Open variation dialog with chat context
+  const openVariationFromChat = (additionalPrompt?: string) => {
+    if (!activeChapter) {
+      const errorMsg: DisplayMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: `❌ No chapter is currently selected. Please select a chapter first to generate a variation.`,
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMsg]);
+      return;
+    }
+    
+    const chatSuggestions = collectChatSuggestions();
+    setVariationChatContext(chatSuggestions);
+    setVariationInitialPrompt(additionalPrompt || '');
+    setVariationDialogOpen(true);
+    
+    // Add a message indicating the dialog is opening
+    const assistantMsg: DisplayMessage = {
+      id: `assistant-${Date.now()}`,
+      role: 'assistant',
+      content: `✨ Opening the Chapter Variation dialog for "${activeChapter.title}"...\n\nI've included our recent conversation as context for generating the variation. You can review the suggestions and customize the prompt before generating.`,
       timestamp: new Date(),
     };
-    setMessages(prev => {
-      const newMsgs = [...prev, userDisplayMsg];
-      // Save after state update
-      setTimeout(() => saveChat(newMsgs, conversationHistory), 0);
-      return newMsgs;
-    });
+    setMessages(prev => [...prev, assistantMsg]);
+  };
 
-    // Find any chapters mentioned in the user's message
+  // Handle local commands that don't need AI (like clipboard operations)
+  const handleLocalCommand = (message: string): boolean => {
+    const lowerMessage = message.toLowerCase();
+    
+    // Check for variation generation request
+    const variationCheck = isVariationRequest(message);
+    if (variationCheck.isVariation) {
+      openVariationFromChat(variationCheck.prompt);
+      return true;
+    }
+    
+    // Check for clipboard copy commands
+    const copyMatch = lowerMessage.match(/copy\s+(?:chapters?\s+)?(\d+)(?:\s*(?:to|through|thru|-|–)\s*(\d+))?\s+(?:to\s+)?(?:my\s+)?clipboard/i) ||
+                      lowerMessage.match(/(?:put|send|get)\s+(?:chapters?\s+)?(\d+)(?:\s*(?:to|through|thru|-|–)\s*(\d+))?\s+(?:to|in|on)\s+(?:my\s+)?clipboard/i);
+    
+    if (copyMatch) {
+      const startChapter = parseInt(copyMatch[1], 10);
+      const endChapter = copyMatch[2] ? parseInt(copyMatch[2], 10) : startChapter;
+      
+      // Validate chapter numbers
+      if (startChapter < 1 || endChapter > book.chapters.length) {
+        const errorMsg: DisplayMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: `❌ Invalid chapter range. Your book has ${book.chapters.length} chapters (1-${book.chapters.length}).`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorMsg]);
+        return true;
+      }
+      
+      // Extract chapter content
+      const chaptersToExport: string[] = [];
+      for (let i = Math.min(startChapter, endChapter); i <= Math.max(startChapter, endChapter); i++) {
+        const chapter = book.chapters[i - 1];
+        if (chapter) {
+          const chapterText = extractText(chapter.content);
+          chaptersToExport.push(`${chapter.title}\n\n${chapterText}`);
+        }
+      }
+      
+      const combinedText = chaptersToExport.join('\n\n---\n\n');
+      
+      // Copy to clipboard
+      navigator.clipboard.writeText(combinedText).then(() => {
+        const chapterRange = startChapter === endChapter 
+          ? `Chapter ${startChapter}` 
+          : `Chapters ${Math.min(startChapter, endChapter)}-${Math.max(startChapter, endChapter)}`;
+        
+        const successMsg: DisplayMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: `✅ **Copied ${chapterRange} to clipboard!**\n\n${chaptersToExport.length} chapter${chaptersToExport.length > 1 ? 's' : ''} copied (${combinedText.length.toLocaleString()} characters).`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, successMsg]);
+      }).catch(err => {
+        const errorMsg: DisplayMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: `❌ Failed to copy to clipboard: ${err.message}`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorMsg]);
+      });
+      
+      return true; // Command was handled
+    }
+    
+    // Check for "copy current chapter" command
+    if (lowerMessage.includes('copy') && (lowerMessage.includes('current chapter') || lowerMessage.includes('this chapter')) && lowerMessage.includes('clipboard')) {
+      if (!activeChapter) {
+        const errorMsg: DisplayMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: `❌ No chapter is currently selected.`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorMsg]);
+        return true;
+      }
+      
+      const chapterText = extractText(activeChapter.content);
+      const combinedText = `${activeChapter.title}\n\n${chapterText}`;
+      
+      navigator.clipboard.writeText(combinedText).then(() => {
+        const successMsg: DisplayMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: `✅ **Copied "${activeChapter.title}" to clipboard!**\n\n${combinedText.length.toLocaleString()} characters copied.`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, successMsg]);
+      });
+      
+      return true;
+    }
+    
+    return false; // Command was not handled locally
+  };
+
+  const sendUserMessageToApi = async (userMessage: string) => {
     const mentionedChapters = findMentionedChapters(userMessage);
     if (mentionedChapters.length > 0) {
       const chapterNums = mentionedChapters.map(c => book.chapters.findIndex(ch => ch.id === c.id) + 1);
@@ -1212,10 +1610,19 @@ Use markdown formatting for readability in your responses.`;
     }
 
     // Build conversation for API with mentioned chapters included
+    // IMPORTANT: System prompt is generated fresh each time to include current chapter context
+    // We do NOT store it in conversationHistory to prevent memory bloat
     const systemPrompt = getSystemPrompt(mentionedChapters);
+    
+    // Only keep recent conversation turns (without system prompt) to limit memory
+    // The system prompt with chapter text is generated fresh each time
+    const recentHistory = conversationHistory
+      .filter(m => m.role !== 'system')
+      .slice(-MAX_CONVERSATION_TURNS * 2); // Keep last N user+assistant pairs
+    
     const newHistory: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
-      ...conversationHistory.filter(m => m.role !== 'system'),
+      ...recentHistory,
       { role: 'user', content: userMessage },
     ];
 
@@ -1239,21 +1646,41 @@ Use markdown formatting for readability in your responses.`;
         if (toolResult.changes.length > 0) {
           const changeList = toolResult.changes.map(c => `- ${c}`).join('\n');
           const failedCount = response.toolCalls.length - editCount;
+          const failedChanges = toolResult.attemptedChanges.filter(a => a.error);
           
           if (!responseContent) {
             responseContent = `**Edit Results:**\n\n${changeList}`;
             if (editCount > 0) {
               responseContent += `\n\n✅ Successfully applied ${editCount} change${editCount > 1 ? 's' : ''}.`;
             }
-            if (failedCount > 0) {
-              responseContent += `\n\n⚠️ ${failedCount} change${failedCount > 1 ? 's' : ''} could not be applied (text not found).`;
+            if (failedCount > 0 && failedChanges.length > 0) {
+              responseContent += `\n\n---\n**${failedCount} change${failedCount > 1 ? 's' : ''} not applied automatically** — use the suggested edits below to apply manually:\n\n`;
+              responseContent += failedChanges.map((a, i) => {
+                return `**Change ${i + 1} — copy & apply:**\n• **Replace this:**\n\`\`\`\n${a.find}\n\`\`\`\n• **With this:**\n\`\`\`\n${a.replace}\n\`\`\``;
+              }).join('\n\n');
             }
           } else {
             // Append change summary to existing content
             responseContent += `\n\n---\n**Changes Made:**\n${changeList}`;
+            if (failedCount > 0 && failedChanges.length > 0) {
+              responseContent += `\n\n---\n**${failedCount} change${failedCount > 1 ? 's' : ''} not applied** — apply manually:\n\n`;
+              responseContent += failedChanges.map((a, i) => {
+                return `**Change ${i + 1}:**\n• **Replace this:**\n\`\`\`\n${a.find}\n\`\`\`\n• **With this:**\n\`\`\`\n${a.replace}\n\`\`\``;
+              }).join('\n\n');
+            }
           }
         } else if (!responseContent && response.toolCalls.length > 0) {
-          responseContent = `⚠️ I tried to make ${response.toolCalls.length} edit${response.toolCalls.length > 1 ? 's' : ''}, but couldn't find the text to replace. The text in your document may differ from what I expected. Please check the chapter content.`;
+          // Text not found — always give suggested changes in chat so user can apply manually
+          if (toolResult.attemptedChanges.length > 0) {
+            const failedChanges = toolResult.attemptedChanges.filter(a => a.error);
+            const anyWithDetails = failedChanges.length > 0 ? failedChanges : toolResult.attemptedChanges;
+            responseContent = `I couldn't apply these changes automatically (the text didn't match exactly in the document). **Here are the suggested edits — you can copy and apply them manually:**\n\n`;
+            responseContent += anyWithDetails.map((a, i) => {
+              return `**Change ${i + 1}:**\n• **Replace this:**\n\`\`\`\n${a.find}\n\`\`\`\n• **With this:**\n\`\`\`\n${a.replace}\n\`\`\``;
+            }).join('\n\n');
+          } else {
+            responseContent = `I couldn't apply the requested changes automatically. The text in your document may differ slightly (e.g. smart quotes, whitespace). Try copying the exact passage from your chapter and asking me to change that specific text — I'll then give you the replacement to paste in.`;
+          }
         }
       }
       
@@ -1275,16 +1702,18 @@ Use markdown formatting for readability in your responses.`;
         editCount: editCount,
       };
       
-      // Update conversation history
+      // Update conversation history - only keep user/assistant messages (no system prompt)
+      // This prevents storing full chapter text in memory
       const updatedHistory = [
-        ...newHistory,
+        ...recentHistory,
+        { role: 'user' as const, content: userMessage },
         { role: 'assistant' as const, content: responseContent },
-      ];
+      ].slice(-MAX_CONVERSATION_TURNS * 2); // Limit total history size
       
       setMessages(prev => {
         const newMsgs = [...prev, assistantMsg];
-        // Save after state update
-        setTimeout(() => saveChat(newMsgs, updatedHistory), 0);
+        // Save after state update - only display messages
+        setTimeout(() => saveChat(newMsgs), 0);
         return newMsgs;
       });
       setConversationHistory(updatedHistory);
@@ -1298,12 +1727,36 @@ Use markdown formatting for readability in your responses.`;
       };
       setMessages(prev => {
         const newMsgs = [...prev, errorMsg];
-        setTimeout(() => saveChat(newMsgs, conversationHistory), 0);
+        setTimeout(() => saveChat(newMsgs), 0);
         return newMsgs;
       });
     } finally {
       setIsLoading(false);
     }
+  };
+
+  sendUserMessageToApiRef.current = sendUserMessageToApi;
+
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+
+    const userMessage = input.trim();
+    setInput('');
+    
+    const userDisplayMsg: DisplayMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: userMessage,
+      timestamp: new Date(),
+    };
+    setMessages(prev => {
+      const newMsgs = [...prev, userDisplayMsg];
+      setTimeout(() => saveChat(newMsgs), 0);
+      return newMsgs;
+    });
+    
+    if (handleLocalCommand(userMessage)) return;
+    await sendUserMessageToApi(userMessage);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1317,7 +1770,7 @@ Use markdown formatting for readability in your responses.`;
     setMessages([]);
     setConversationHistory([]);
     // Also clear from IndexedDB
-    await saveChatToDB(book.id, [], []);
+    await saveChatToDB(book.id, []);
   };
 
   return (
@@ -1357,8 +1810,8 @@ Use markdown formatting for readability in your responses.`;
               <button onClick={() => setInput('Make the dialogue more natural in this chapter')}>
                 Improve dialogue
               </button>
-              <button onClick={() => setInput('Add more sensory details to this chapter')}>
-                Add sensory details
+              <button onClick={() => setInput('Generate a variation of this chapter')}>
+                ✨ Generate variation
               </button>
             </div>
           </div>
@@ -1413,6 +1866,19 @@ Use markdown formatting for readability in your responses.`;
           <SendIcon />
         </button>
       </div>
+      
+      {/* Chapter Variation Dialog */}
+      <ChapterVariationDialog
+        isOpen={variationDialogOpen}
+        onClose={() => {
+          setVariationDialogOpen(false);
+          setVariationChatContext('');
+          setVariationInitialPrompt('');
+        }}
+        chapterId={activeChapter?.id || ''}
+        chatSuggestions={variationChatContext}
+        initialPrompt={variationInitialPrompt}
+      />
     </div>
   );
 };

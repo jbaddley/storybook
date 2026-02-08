@@ -2,6 +2,9 @@ import { create } from 'zustand';
 import { 
   Book, 
   Chapter, 
+  ChapterComment,
+  ChapterNote,
+  ChapterVariation,
   DocumentTab,
   Character,
   Location,
@@ -9,10 +12,14 @@ import {
   AISuggestion, 
   ChapterSummary, 
   StoryCraftChapterFeedback,
+  StoryPromise,
   ThemesAndMotifs,
   Theme,
   Motif,
   Symbol,
+  PlotErrorAnalysis,
+  BackgroundTask,
+  Toast,
   createNewBook, 
   createNewChapter,
   createNewDocumentTab,
@@ -31,15 +38,33 @@ interface SyncStatus {
   timestamp: number | null;
 }
 
-interface UIState {
+/** Content editor page theme: light (white page) or dark (dark page) */
+export type ContentEditorTheme = 'light' | 'dark';
+
+export interface PanelSettings {
   showChaptersPanel: boolean;
   showAIPanel: boolean;
+  leftPanelWidth: number;
+  rightPanelWidth: number;
+}
+
+interface UIState extends PanelSettings {
   zoom: number;
   isSettingsOpen: boolean;
   isDirty: boolean;
   currentFilePath: string | null;
   activeDocumentTabId: string | null; // null means viewing a chapter
   syncStatus: SyncStatus;
+  currentUserId: string | null; // Current logged-in user ID from database
+  isDbConnected: boolean; // Whether database connection is active
+  /** Content editor page appearance: light (default) or dark */
+  contentEditorTheme: ContentEditorTheme;
+  /** Active tab in the AI panel: actions | chat | comments | notes */
+  aiPanelTab: 'actions' | 'chat' | 'comments' | 'notes';
+  /** When set, chat opens with this as the first user message and sends to LLM (e.g. from Comments "Send to Chat"). */
+  pendingChatMessage: string | null;
+  /** When set, chat opens with this text in the input only (e.g. from Editor "Add to chat") – user can edit before sending. */
+  chatInputPreFill: string | null;
 }
 
 interface AIState {
@@ -47,11 +72,15 @@ interface AIState {
   summaries: Map<string, ChapterSummary>;
   isAnalyzing: boolean;
   isExtracting: boolean;
+  /** Chapter ID currently running story craft analysis (single re-run or extract) */
+  storyCraftRunningChapterId: string | null;
 }
 
 interface BookState {
   book: Book;
   activeChapterId: string | null;
+  /** In-dialog pending variation draft (not yet added to chapter.variations) */
+  pendingChapterVariation: Record<string, ChapterVariation>;
   ui: UIState;
   ai: AIState;
   
@@ -67,14 +96,30 @@ interface BookState {
   importFromGoogleDocs: (chapters: Chapter[], googleDocsSource: { documentId: string; documentName: string }) => void;
   setGoogleDocsExport: (exportInfo: { documentId: string; documentName: string; webViewLink: string; folderId?: string; folderPath?: string }) => void;
   deleteChapter: (chapterId: string) => void;
+  insertChapterAt: (position: number) => void;
   updateChapter: (chapterId: string, updates: Partial<Chapter>) => void;
   updateChapterContent: (chapterId: string, content: TipTapContent) => void;
   reorderChapters: (sourceIndex: number, destinationIndex: number) => void;
   renumberChapters: () => void;
   
+  // Comment actions
+  addComment: (chapterId: string, comment: ChapterComment) => void;
+  updateComment: (chapterId: string, commentId: string, updates: Partial<ChapterComment>) => void;
+  deleteComment: (chapterId: string, commentId: string) => void;
+  resolveComment: (chapterId: string, commentId: string) => void;
+  clearChapterComments: (chapterId: string) => void;
+  
+  // Note actions
+  addNote: (chapterId: string, note: ChapterNote) => void;
+  updateNote: (chapterId: string, noteId: string, updates: Partial<ChapterNote>) => void;
+  deleteNote: (chapterId: string, noteId: string) => void;
+  
   // UI actions
   toggleChaptersPanel: () => void;
   toggleAIPanel: () => void;
+  setPanelSettings: (settings: Partial<PanelSettings>) => void;
+  setLeftPanelWidth: (width: number) => void;
+  setRightPanelWidth: (width: number) => void;
   setZoom: (zoom: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -82,6 +127,12 @@ interface BookState {
   setSettingsOpen: (open: boolean) => void;
   setDirty: (dirty: boolean) => void;
   setCurrentFilePath: (path: string | null) => void;
+  setCurrentUserId: (userId: string | null) => void;
+  setDbConnected: (connected: boolean) => void;
+  setContentEditorTheme: (theme: ContentEditorTheme) => void;
+  setAIPanelTab: (tab: 'actions' | 'chat' | 'comments' | 'notes') => void;
+  setPendingChatMessage: (msg: string | null) => void;
+  setChatInputPreFill: (msg: string | null) => void;
   
   // Sync actions
   setSyncStatus: (status: Partial<SyncStatus>) => void;
@@ -94,6 +145,7 @@ interface BookState {
   setAISummaries: (summaries: Map<string, ChapterSummary>) => void;
   setAnalyzing: (analyzing: boolean) => void;
   setExtracting: (extracting: boolean) => void;
+  setStoryCraftRunningChapterId: (chapterId: string | null) => void;
   
   // Document Tab actions
   setActiveDocumentTab: (tabId: string | null) => void;
@@ -121,8 +173,18 @@ interface BookState {
   
   // Story Craft Feedback actions
   addOrUpdateStoryCraftFeedback: (feedback: StoryCraftChapterFeedback) => void;
+  replaceStoryCraftFeedback: (chapterId: string, feedback: StoryCraftChapterFeedback) => void;
   updateStoryCraftChecklist: (chapterId: string, checklistItemId: string, isCompleted: boolean) => void;
+  deleteStoryCraftFeedback: (chapterId: string) => void;
   getStoryCraftFeedback: (chapterId: string) => StoryCraftChapterFeedback | undefined;
+  getAllPromisesMade: (beforeChapterOrder: number) => Array<{
+    id: string;
+    type: string;
+    description: string;
+    context: string;
+    chapterId: string;
+    chapterTitle: string;
+  }>;
   
   // Themes and Motifs actions
   updateThemesAndMotifs: (data: Partial<ThemesAndMotifs>) => void;
@@ -131,6 +193,23 @@ interface BookState {
   addOrUpdateSymbol: (symbol: Omit<Symbol, 'id'> & { id?: string }) => void;
   getThemesAndMotifs: () => ThemesAndMotifs;
   
+  // Plot Error Analysis actions
+  setPlotErrorAnalysis: (analysis: PlotErrorAnalysis) => void;
+  updatePlotErrorAnalysis: (updates: Partial<PlotErrorAnalysis>) => void;
+  clearPlotErrorAnalysis: () => void;
+  getPlotErrorAnalysis: () => PlotErrorAnalysis | null;
+  
+  // Chapter Variation actions
+  setChapterVariation: (chapterId: string, variation: ChapterVariation) => void; // In-dialog pending draft
+  applyVariation: (chapterId: string, variationId?: string) => void; // Apply by id from list, or apply pending
+  discardVariation: (chapterId: string) => void;
+  getChapterVariation: (chapterId: string) => ChapterVariation | undefined; // Pending draft
+  getChapterVariations: (chapterId: string) => ChapterVariation[];
+  addChapterVariation: (chapterId: string, variation: ChapterVariation) => void;
+  restoreOriginal: (chapterId: string) => void;
+  clearOriginal: (chapterId: string) => void;
+  hasOriginal: (chapterId: string) => boolean;
+  
   // Computed
   getActiveChapter: () => Chapter | undefined;
   getChapterById: (id: string) => Chapter | undefined;
@@ -138,16 +217,54 @@ interface BookState {
   getActiveDocumentTab: () => DocumentTab | undefined;
   getDocumentTabById: (id: string) => DocumentTab | undefined;
   getSortedTimeline: () => TimelineEvent[];
+  
+  // Background task actions
+  backgroundTasks: BackgroundTask[];
+  addBackgroundTask: (task: Omit<BackgroundTask, 'id' | 'startedAt'>) => string;
+  updateBackgroundTask: (id: string, updates: Partial<BackgroundTask>) => void;
+  removeBackgroundTask: (id: string) => void;
+  getBackgroundTask: (id: string) => BackgroundTask | undefined;
+  
+  // Toast notification actions
+  toasts: Toast[];
+  addToast: (toast: Omit<Toast, 'id'>) => string;
+  removeToast: (id: string) => void;
 }
 
 const initialBook = createNewBook();
 
+const LAST_CHAPTER_BY_BOOK_KEY = 'storybook-last-chapter-by-book';
+
+function getLastChapterByBook(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(LAST_CHAPTER_BY_BOOK_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function setLastChapterForBook(bookId: string, chapterId: string): void {
+  const map = getLastChapterByBook();
+  map[bookId] = chapterId;
+  try {
+    localStorage.setItem(LAST_CHAPTER_BY_BOOK_KEY, JSON.stringify(map));
+  } catch {
+    // ignore quota or other errors
+  }
+}
+
 export const useBookStore = create<BookState>((set, get) => ({
   book: initialBook,
   activeChapterId: initialBook.chapters[0]?.id || null,
+  pendingChapterVariation: {},
   ui: {
     showChaptersPanel: true,
     showAIPanel: true,
+    leftPanelWidth: 280,
+    rightPanelWidth: 400,
     zoom: 100,
     isSettingsOpen: false,
     isDirty: false,
@@ -161,19 +278,79 @@ export const useBookStore = create<BookState>((set, get) => ({
       success: null,
       timestamp: null,
     },
+    currentUserId: null,
+    isDbConnected: false,
+    contentEditorTheme: 'light',
+    aiPanelTab: 'actions',
+    pendingChatMessage: null,
+    chatInputPreFill: null,
   },
   ai: {
     suggestions: [],
     summaries: new Map(),
     isAnalyzing: false,
     isExtracting: false,
+    storyCraftRunningChapterId: null,
   },
+  
+  // Background tasks and toasts
+  backgroundTasks: [],
+  toasts: [],
 
   // Book actions
   setBook: (book) => {
-    set({ 
-      book, 
-      activeChapterId: book.chapters[0]?.id || null,
+    // Ensure all permanent document tabs exist (for backwards compatibility)
+    const now = new Date().toISOString();
+    const permanentTabs = [
+      { id: 'characters-tab', title: 'Characters', icon: '👤', tabType: 'characters' as const },
+      { id: 'locations-tab', title: 'Locations', icon: '📍', tabType: 'locations' as const },
+      { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' as const },
+      { id: 'summaries-tab', title: 'Summaries', icon: '📝', tabType: 'summaries' as const },
+      { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' as const },
+      { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' as const },
+    ];
+    
+    const existingTabs = book.documentTabs || [];
+    const missingTabs = permanentTabs.filter(pt => 
+      !existingTabs.some(et => et.tabType === pt.tabType)
+    );
+    
+    const updatedDocumentTabs = [
+      ...existingTabs,
+      ...missingTabs.map(pt => ({
+        ...pt,
+        content: DEFAULT_TIPTAP_CONTENT,
+        isPermanent: true,
+        createdAt: now,
+        updatedAt: now,
+      })),
+    ];
+    
+    // Ensure extracted data has new fields
+    const updatedExtracted = {
+      ...book.extracted,
+      storyCraftFeedback: book.extracted.storyCraftFeedback || [],
+      themesAndMotifs: book.extracted.themesAndMotifs || {
+        themes: [],
+        motifs: [],
+        symbols: [],
+        lastUpdated: now,
+      },
+      plotErrorAnalysis: book.extracted.plotErrorAnalysis || undefined,
+    };
+    
+    const lastChapterMap = getLastChapterByBook();
+    const lastChapterId = book.id ? lastChapterMap[book.id] : undefined;
+    const hasChapter = lastChapterId && book.chapters.some((c) => c.id === lastChapterId);
+    const activeChapterId = hasChapter ? lastChapterId! : (book.chapters[0]?.id || null);
+
+    set({
+      book: {
+        ...book,
+        documentTabs: updatedDocumentTabs,
+        extracted: updatedExtracted,
+      },
+      activeChapterId,
       ui: { ...get().ui, isDirty: false }
     });
   },
@@ -200,6 +377,8 @@ export const useBookStore = create<BookState>((set, get) => ({
 
   // Chapter actions
   setActiveChapter: (chapterId) => {
+    const bookId = get().book.id;
+    if (bookId) setLastChapterForBook(bookId, chapterId);
     set({ activeChapterId: chapterId });
   },
 
@@ -211,6 +390,36 @@ export const useBookStore = create<BookState>((set, get) => ({
         book: {
           ...state.book,
           chapters: [...state.book.chapters, newChapter],
+          updatedAt: new Date().toISOString(),
+        },
+        activeChapterId: newChapter.id,
+        ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+
+  insertChapterAt: (position: number) => {
+    set((state) => {
+      // Create new chapter with temporary order
+      const newChapter = createNewChapter(position + 1);
+      
+      // Get sorted chapters and insert at position
+      const sortedChapters = [...state.book.chapters].sort((a, b) => a.order - b.order);
+      sortedChapters.splice(position, 0, newChapter);
+      
+      // Renumber all chapters
+      sortedChapters.forEach((chapter, index) => {
+        chapter.order = index + 1;
+        // Update title to reflect new order if it's a default "Chapter X" title
+        if (chapter.id === newChapter.id) {
+          chapter.title = `Chapter ${index + 1}`;
+        }
+      });
+      
+      return {
+        book: {
+          ...state.book,
+          chapters: sortedChapters,
           updatedAt: new Date().toISOString(),
         },
         activeChapterId: newChapter.id,
@@ -441,6 +650,147 @@ export const useBookStore = create<BookState>((set, get) => ({
     });
   },
 
+  // Comment actions
+  addComment: (chapterId: string, comment: ChapterComment) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          return {
+            ...chapter,
+            comments: [...(chapter.comments || []), comment],
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
+  updateComment: (chapterId: string, commentId: string, updates: Partial<ChapterComment>) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          const comments = (chapter.comments || []).map((comment) =>
+            comment.id === commentId ? { ...comment, ...updates } : comment
+          );
+          return { ...chapter, comments, updatedAt: new Date().toISOString() };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
+  deleteComment: (chapterId: string, commentId: string) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          const comments = (chapter.comments || []).filter((c) => c.id !== commentId);
+          return { ...chapter, comments, updatedAt: new Date().toISOString() };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
+  resolveComment: (chapterId: string, commentId: string) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          const comments = (chapter.comments || []).map((comment) =>
+            comment.id === commentId ? { ...comment, resolved: true } : comment
+          );
+          return { ...chapter, comments, updatedAt: new Date().toISOString() };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
+  clearChapterComments: (chapterId: string) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          return { ...chapter, comments: [], updatedAt: new Date().toISOString() };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
+  // Note actions
+  addNote: (chapterId: string, note: ChapterNote) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          return {
+            ...chapter,
+            notes: [...(chapter.notes || []), note],
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
+  updateNote: (chapterId: string, noteId: string, updates: Partial<ChapterNote>) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          const notes = (chapter.notes || []).map((note) =>
+            note.id === noteId ? { ...note, ...updates, updatedAt: new Date().toISOString() } : note
+          );
+          return { ...chapter, notes, updatedAt: new Date().toISOString() };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
+  deleteNote: (chapterId: string, noteId: string) => {
+    set((state) => {
+      const chapters = state.book.chapters.map((chapter) => {
+        if (chapter.id === chapterId) {
+          const notes = (chapter.notes || []).filter((n) => n.id !== noteId);
+          return { ...chapter, notes, updatedAt: new Date().toISOString() };
+        }
+        return chapter;
+      });
+      return {
+        book: { ...state.book, chapters, updatedAt: new Date().toISOString() },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
   // UI actions
   toggleChaptersPanel: () => {
     set((state) => ({
@@ -451,6 +801,24 @@ export const useBookStore = create<BookState>((set, get) => ({
   toggleAIPanel: () => {
     set((state) => ({
       ui: { ...state.ui, showAIPanel: !state.ui.showAIPanel }
+    }));
+  },
+
+  setPanelSettings: (settings) => {
+    set((state) => ({
+      ui: { ...state.ui, ...settings }
+    }));
+  },
+
+  setLeftPanelWidth: (width) => {
+    set((state) => ({
+      ui: { ...state.ui, leftPanelWidth: Math.min(500, Math.max(180, width)) }
+    }));
+  },
+
+  setRightPanelWidth: (width) => {
+    set((state) => ({
+      ui: { ...state.ui, rightPanelWidth: Math.min(600, Math.max(280, width)) }
     }));
   },
 
@@ -493,6 +861,45 @@ export const useBookStore = create<BookState>((set, get) => ({
   setCurrentFilePath: (path) => {
     set((state) => ({
       ui: { ...state.ui, currentFilePath: path }
+    }));
+  },
+
+  setCurrentUserId: (userId) => {
+    set((state) => ({
+      ui: { ...state.ui, currentUserId: userId }
+    }));
+  },
+
+  setDbConnected: (connected) => {
+    set((state) => ({
+      ui: { ...state.ui, isDbConnected: connected }
+    }));
+  },
+
+  setContentEditorTheme: (theme) => {
+    set((state) => ({
+      ui: { ...state.ui, contentEditorTheme: theme }
+    }));
+    if (typeof window !== 'undefined' && window.electronAPI?.storeSet) {
+      window.electronAPI.storeSet('content-editor-theme', theme);
+    }
+  },
+
+  setAIPanelTab: (tab) => {
+    set((state) => ({
+      ui: { ...state.ui, aiPanelTab: tab }
+    }));
+  },
+
+  setPendingChatMessage: (msg) => {
+    set((state) => ({
+      ui: { ...state.ui, pendingChatMessage: msg }
+    }));
+  },
+
+  setChatInputPreFill: (msg) => {
+    set((state) => ({
+      ui: { ...state.ui, chatInputPreFill: msg }
     }));
   },
 
@@ -543,8 +950,20 @@ export const useBookStore = create<BookState>((set, get) => ({
     set((state) => {
       const summaries = new Map(state.ai.summaries);
       summaries.set(summary.chapterId, summary);
+      // Keep book.extracted.summaries in sync so Story Craft and file save have current data
+      const extractedSummaries = state.book.extracted.summaries || [];
+      const otherSummaries = extractedSummaries.filter(s => s.chapterId !== summary.chapterId);
+      const newExtractedSummaries = [...otherSummaries, summary];
       return {
-        ai: { ...state.ai, summaries }
+        ai: { ...state.ai, summaries },
+        book: {
+          ...state.book,
+          extracted: {
+            ...state.book.extracted,
+            summaries: newExtractedSummaries,
+          },
+        },
+        ui: { ...state.ui, isDirty: true },
       };
     });
   },
@@ -564,6 +983,12 @@ export const useBookStore = create<BookState>((set, get) => ({
   setExtracting: (extracting) => {
     set((state) => ({
       ai: { ...state.ai, isExtracting: extracting }
+    }));
+  },
+
+  setStoryCraftRunningChapterId: (chapterId) => {
+    set((state) => ({
+      ai: { ...state.ai, storyCraftRunningChapterId: chapterId }
     }));
   },
 
@@ -1021,8 +1446,17 @@ export const useBookStore = create<BookState>((set, get) => ({
     set((state) => {
       const newSummaries = new Map(state.ai.summaries);
       newSummaries.delete(chapterId);
+      const extractedSummaries = state.book.extracted.summaries || [];
+      const newExtractedSummaries = extractedSummaries.filter(s => s.chapterId !== chapterId);
       return {
         ai: { ...state.ai, summaries: newSummaries },
+        book: {
+          ...state.book,
+          extracted: {
+            ...state.book.extracted,
+            summaries: newExtractedSummaries,
+          },
+        },
         ui: { ...state.ui, isDirty: true }
       };
     });
@@ -1049,15 +1483,42 @@ export const useBookStore = create<BookState>((set, get) => ({
           }
         }
         
+        // Preserve existing summary if new one is empty
+        const summary = feedback.summary || existing.summary || '';
+        
+        // Preserve existing promises if new ones are empty
+        const promisesMade = feedback.promisesMade?.length ? feedback.promisesMade : existing.promisesMade;
+        const promisesKept = feedback.promisesKept?.length ? feedback.promisesKept : existing.promisesKept;
+        
         newFeedback = [
           ...currentFeedback.slice(0, existingIndex),
-          { ...feedback, checklist: mergedChecklist, lastUpdated: new Date().toISOString() },
+          { ...feedback, checklist: mergedChecklist, summary, promisesMade, promisesKept, lastUpdated: new Date().toISOString() },
           ...currentFeedback.slice(existingIndex + 1)
         ];
       } else {
         newFeedback = [...currentFeedback, feedback];
       }
       
+      return {
+        book: {
+          ...state.book,
+          extracted: {
+            ...state.book.extracted,
+            storyCraftFeedback: newFeedback
+          }
+        },
+        ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+
+  replaceStoryCraftFeedback: (chapterId, feedback) => {
+    set((state) => {
+      const currentFeedback = state.book.extracted.storyCraftFeedback || [];
+      const idx = currentFeedback.findIndex(f => f.chapterId === chapterId);
+      const newFeedback = idx >= 0
+        ? [...currentFeedback.slice(0, idx), { ...feedback, chapterId, lastUpdated: new Date().toISOString() }, ...currentFeedback.slice(idx + 1)]
+        : [...currentFeedback, { ...feedback, chapterId, lastUpdated: new Date().toISOString() }];
       return {
         book: {
           ...state.book,
@@ -1104,9 +1565,73 @@ export const useBookStore = create<BookState>((set, get) => ({
     });
   },
 
+  deleteStoryCraftFeedback: async (chapterId) => {
+    // Delete from database immediately
+    try {
+      await window.electronAPI.dbDeleteStoryCraftFeedback(chapterId);
+    } catch (error) {
+      console.error('Failed to delete story craft feedback from database:', error);
+      // Continue anyway - will sync on next save
+    }
+    
+    // Remove from store
+    set((state) => {
+      const currentFeedback = state.book.extracted.storyCraftFeedback || [];
+      const filteredFeedback = currentFeedback.filter(f => f.chapterId !== chapterId);
+      
+      return {
+        book: {
+          ...state.book,
+          extracted: {
+            ...state.book.extracted,
+            storyCraftFeedback: filteredFeedback
+          }
+        },
+        ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+
   getStoryCraftFeedback: (chapterId) => {
     const state = get();
     return (state.book.extracted.storyCraftFeedback || []).find(f => f.chapterId === chapterId);
+  },
+  
+  getAllPromisesMade: (beforeChapterOrder) => {
+    const state = get();
+    const chapters = state.book.chapters;
+    const storyCraftFeedback = state.book.extracted.storyCraftFeedback || [];
+    
+    // Get all chapters with order less than the specified order
+    const previousChapters = chapters.filter(c => c.order < beforeChapterOrder);
+    
+    // Collect all promises from those chapters
+    const allPromises: Array<{
+      id: string;
+      type: string;
+      description: string;
+      context: string;
+      chapterId: string;
+      chapterTitle: string;
+    }> = [];
+    
+    for (const chapter of previousChapters) {
+      const feedback = storyCraftFeedback.find(f => f.chapterId === chapter.id);
+      if (feedback?.promisesMade) {
+        for (const promise of feedback.promisesMade) {
+          allPromises.push({
+            id: promise.id,
+            type: promise.type,
+            description: promise.description,
+            context: promise.context,
+            chapterId: chapter.id,
+            chapterTitle: chapter.title,
+          });
+        }
+      }
+    }
+    
+    return allPromises;
   },
 
   // Themes and Motifs actions
@@ -1313,6 +1838,191 @@ export const useBookStore = create<BookState>((set, get) => ({
     };
   },
 
+  // Plot Error Analysis actions
+  setPlotErrorAnalysis: (analysis) => {
+    set((state) => ({
+      book: {
+        ...state.book,
+        extracted: {
+          ...state.book.extracted,
+          plotErrorAnalysis: analysis,
+        },
+      },
+    }));
+  },
+
+  updatePlotErrorAnalysis: (updates) => {
+    set((state) => {
+      const current = state.book.extracted.plotErrorAnalysis;
+      if (!current) {
+        return state;
+      }
+      return {
+        book: {
+          ...state.book,
+          extracted: {
+            ...state.book.extracted,
+            plotErrorAnalysis: {
+              ...current,
+              ...updates,
+              lastUpdated: new Date().toISOString(),
+            },
+          },
+        },
+      };
+    });
+  },
+
+  clearPlotErrorAnalysis: () => {
+    set((state) => ({
+      book: {
+        ...state.book,
+        extracted: {
+          ...state.book.extracted,
+          plotErrorAnalysis: null,
+        },
+      },
+    }));
+  },
+
+  getPlotErrorAnalysis: () => {
+    const state = get();
+    return state.book.extracted.plotErrorAnalysis || null;
+  },
+
+  // Chapter Variation actions
+  setChapterVariation: (chapterId, variation) => {
+    set((state) => ({
+      pendingChapterVariation: { ...state.pendingChapterVariation, [chapterId]: variation },
+      ui: { ...state.ui, isDirty: true }
+    }));
+  },
+
+  applyVariation: (chapterId, variationId) => {
+    set((state) => {
+      const chapter = state.book.chapters.find(c => c.id === chapterId);
+      if (!chapter) return state;
+      const variations = chapter.variations ?? [];
+      let variation: ChapterVariation | undefined;
+      if (variationId) {
+        variation = variations.find(v => v.id === variationId);
+      } else {
+        variation = state.pendingChapterVariation[chapterId];
+      }
+      if (!variation) return state;
+      const { pendingChapterVariation } = state;
+      const nextPending = { ...pendingChapterVariation };
+      delete nextPending[chapterId];
+      const addToVariations = !variationId && !variations.some(v => v.id === variation!.id);
+      return {
+        book: {
+          ...state.book,
+          chapters: state.book.chapters.map((c) => {
+            if (c.id !== chapterId) return c;
+            const nextVariations = addToVariations ? [...(c.variations ?? []), variation!] : (c.variations ?? []);
+            return {
+              ...c,
+              content: variation!.content,
+              wordCount: variation!.wordCount,
+              variations: nextVariations,
+              updatedAt: new Date().toISOString(),
+            };
+          }),
+          updatedAt: new Date().toISOString(),
+        },
+        pendingChapterVariation: nextPending,
+        ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+
+  addChapterVariation: (chapterId, variation) => {
+    set((state) => ({
+      book: {
+        ...state.book,
+        chapters: state.book.chapters.map((c) =>
+          c.id === chapterId
+            ? {
+                ...c,
+                variations: [...(c.variations ?? []), variation],
+                updatedAt: new Date().toISOString(),
+              }
+            : c
+        ),
+        updatedAt: new Date().toISOString(),
+      },
+      ui: { ...state.ui, isDirty: true }
+    }));
+  },
+
+  getChapterVariations: (chapterId) => {
+    const chapter = get().book.chapters.find(c => c.id === chapterId);
+    return chapter?.variations ?? [];
+  },
+
+  restoreOriginal: (chapterId) => {
+    set((state) => {
+      const chapter = state.book.chapters.find(c => c.id === chapterId);
+      if (!chapter?.originalContent) return state;
+      return {
+        book: {
+          ...state.book,
+          chapters: state.book.chapters.map((c) =>
+            c.id === chapterId
+              ? {
+                  ...c,
+                  content: c.originalContent!,
+                  wordCount: c.originalWordCount ?? c.wordCount,
+                  updatedAt: new Date().toISOString(),
+                }
+              : c
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+        ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+  
+  clearOriginal: (chapterId) => {
+    set((state) => ({
+      book: {
+        ...state.book,
+        chapters: state.book.chapters.map((chapter) =>
+          chapter.id === chapterId
+            ? {
+                ...chapter,
+                originalContent: undefined,
+                originalWordCount: undefined,
+                variationAppliedAt: undefined,
+                updatedAt: new Date().toISOString(),
+              }
+            : chapter
+        ),
+        updatedAt: new Date().toISOString(),
+      },
+      ui: { ...state.ui, isDirty: true }
+    }));
+  },
+  
+  hasOriginal: (chapterId) => {
+    const state = get();
+    const chapter = state.book.chapters.find(c => c.id === chapterId);
+    return chapter?.originalContent !== undefined;
+  },
+
+  discardVariation: (chapterId) => {
+    set((state) => {
+      const nextPending = { ...state.pendingChapterVariation };
+      delete nextPending[chapterId];
+      return { pendingChapterVariation: nextPending };
+    });
+  },
+
+  getChapterVariation: (chapterId) => {
+    return get().pendingChapterVariation[chapterId];
+  },
+
   // Computed
   getActiveChapter: () => {
     const state = get();
@@ -1351,6 +2061,54 @@ export const useBookStore = create<BookState>((set, get) => ({
       if (!a.sortDate && b.sortDate) return 1;
       return a.order - b.order;
     });
+  },
+  
+  // Background task actions
+  addBackgroundTask: (task) => {
+    const id = generateId();
+    const newTask: BackgroundTask = {
+      ...task,
+      id,
+      startedAt: new Date().toISOString(),
+    };
+    set((state) => ({
+      backgroundTasks: [...state.backgroundTasks, newTask],
+    }));
+    return id;
+  },
+  
+  updateBackgroundTask: (id, updates) => {
+    set((state) => ({
+      backgroundTasks: state.backgroundTasks.map(task =>
+        task.id === id ? { ...task, ...updates } : task
+      ),
+    }));
+  },
+  
+  removeBackgroundTask: (id) => {
+    set((state) => ({
+      backgroundTasks: state.backgroundTasks.filter(task => task.id !== id),
+    }));
+  },
+  
+  getBackgroundTask: (id) => {
+    return get().backgroundTasks.find(task => task.id === id);
+  },
+  
+  // Toast notification actions
+  addToast: (toast) => {
+    const id = generateId();
+    const newToast: Toast = { ...toast, id };
+    set((state) => ({
+      toasts: [...state.toasts, newToast],
+    }));
+    return id;
+  },
+  
+  removeToast: (id) => {
+    set((state) => ({
+      toasts: state.toasts.filter(toast => toast.id !== id),
+    }));
   },
 }));
 

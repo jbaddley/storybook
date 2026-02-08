@@ -4,11 +4,13 @@ module.exports = [
   {
     entry: './src/main/main.ts',
     target: 'electron-main',
-    externals: [
-      'electron-reloader',
-      'chokidar',
-      'fsevents'
-    ],
+    externals: {
+      'electron-reloader': 'commonjs electron-reloader',
+      'chokidar': 'commonjs chokidar',
+      'fsevents': 'commonjs fsevents',
+      '@prisma/client': 'commonjs @prisma/client',
+      '.prisma/client': 'commonjs .prisma/client',
+    },
     module: {
       rules: [
         {

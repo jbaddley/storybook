@@ -1,22 +1,35 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useBookStore } from './stores/bookStore';
-import { ChapterList } from './components/ChapterList';
+import { ChapterList, ChapterListHeaderActions } from './components/ChapterList';
 import { Editor } from './components/Editor';
-import { AIPanel } from './components/AIPanel';
+import { AIPanel, AIPanelHeaderActions } from './components/AIPanel';
+import { ResizablePanel } from './components/ResizablePanel';
 import { Toolbar } from './components/Toolbar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { KeyboardShortcutsDialog } from './components/KeyboardShortcutsDialog';
 import { DocumentTabViewer } from './components/DocumentTabViewer';
-import { AutosaveIndicator, RecoveryDialog } from './components/AutosaveIndicator';
+import { AutosaveIndicator } from './components/AutosaveIndicator';
 import { GoogleDocsImportDialog } from './components/GoogleDocsImportDialog';
 import { GoogleDocsExportDialog } from './components/GoogleDocsExportDialog';
 import { GoogleDocsSyncDialog } from './components/GoogleDocsSyncDialog';
+import { GoogleDriveBackupDialog } from './components/GoogleDriveBackupDialog';
+import { PdfExportDialog } from './components/PdfExportDialog';
+import { RecoveryTool } from './components/RecoveryTool';
+import { ToastContainer } from './components/ToastNotification';
+import { BackgroundTaskIndicator } from './components/BackgroundTaskIndicator';
+import { AudioExportDialog } from './components/AudioExportDialog';
 import { useFileOperations } from './hooks/useFileOperations';
 import { useMenuEvents } from './hooks/useMenuEvents';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutosave } from './hooks/useAutosave';
-import { getAutosaveTimestamp } from './services/storageService';
+import { DEFAULT_TIPTAP_CONTENT, DocumentTab } from '../shared/types';
 import './styles/app.css';
+
+const PANEL_SETTINGS_KEY = 'panel-settings';
+
+function getPanelSettingsKey(userId: string | null): string {
+  return userId ? `${PANEL_SETTINGS_KEY}:${userId}` : PANEL_SETTINGS_KEY;
+}
 
 const App: React.FC = () => {
   const { 
@@ -24,68 +37,139 @@ const App: React.FC = () => {
     book,
     toggleChaptersPanel, 
     toggleAIPanel,
+    setPanelSettings,
+    setLeftPanelWidth,
+    setRightPanelWidth,
     zoomIn,
     zoomOut,
     resetZoom,
     setSettingsOpen,
+    setContentEditorTheme,
   } = useBookStore();
+
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Load persisted content editor theme on init
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.electronAPI?.storeGet) {
+      window.electronAPI.storeGet('content-editor-theme').then((saved: unknown) => {
+        if (saved === 'light' || saved === 'dark') {
+          setContentEditorTheme(saved);
+        }
+      });
+    }
+  }, [setContentEditorTheme]);
+
+  // Load panel settings on init and when user changes (user-scoped persistence)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.electronAPI?.storeGet) return;
+    const key = getPanelSettingsKey(ui.currentUserId);
+    window.electronAPI.storeGet(key).then((saved: unknown) => {
+      const data = saved as { showChaptersPanel?: boolean; showAIPanel?: boolean; leftPanelWidth?: number; rightPanelWidth?: number } | null;
+      if (data && typeof data === 'object') {
+        setPanelSettings({
+          ...(typeof data.showChaptersPanel === 'boolean' && { showChaptersPanel: data.showChaptersPanel }),
+          ...(typeof data.showAIPanel === 'boolean' && { showAIPanel: data.showAIPanel }),
+          ...(typeof data.leftPanelWidth === 'number' && data.leftPanelWidth >= 180 && data.leftPanelWidth <= 500 && { leftPanelWidth: data.leftPanelWidth }),
+          ...(typeof data.rightPanelWidth === 'number' && data.rightPanelWidth >= 280 && data.rightPanelWidth <= 600 && { rightPanelWidth: data.rightPanelWidth }),
+        });
+      }
+    });
+  }, [ui.currentUserId, setPanelSettings]);
+
+  // Persist panel settings when they change (debounced, user-scoped)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.electronAPI?.storeSet) return;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      const key = getPanelSettingsKey(ui.currentUserId);
+      window.electronAPI.storeSet(key, {
+        showChaptersPanel: ui.showChaptersPanel,
+        showAIPanel: ui.showAIPanel,
+        leftPanelWidth: ui.leftPanelWidth,
+        rightPanelWidth: ui.rightPanelWidth,
+      });
+      saveTimeoutRef.current = null;
+    }, 300);
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [ui.currentUserId, ui.showChaptersPanel, ui.showAIPanel, ui.leftPanelWidth, ui.rightPanelWidth]);
   
   // Get active document tab (if any) - need to compute based on reactive state
+  // Permanent tabs might not be in book.documentTabs yet, so we need to check both
   const activeDocumentTab = ui.activeDocumentTabId 
-    ? book.documentTabs?.find(t => t.id === ui.activeDocumentTabId)
+    ? (book.documentTabs?.find(t => t.id === ui.activeDocumentTabId) || 
+       // If not found in saved tabs, check if it's a permanent tab and create it
+       (() => {
+         const permanentTabDefs: Array<{ id: string; title: string; icon: string; tabType: any }> = [
+           { id: 'characters-tab', title: 'Characters', icon: '👤', tabType: 'characters' },
+           { id: 'locations-tab', title: 'Locations', icon: '📍', tabType: 'locations' },
+           { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
+           { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+           { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
+           { id: 'plotanalysis-tab', title: 'Plot Analysis', icon: '🔍', tabType: 'plotanalysis' },
+         ];
+         const def = permanentTabDefs.find(pt => pt.id === ui.activeDocumentTabId);
+         if (def) {
+           // Create a temporary tab object for permanent tabs
+           return {
+             id: def.id,
+             title: def.title,
+             icon: def.icon,
+             tabType: def.tabType,
+             content: book.documentTabs?.find(t => t.tabType === def.tabType)?.content || DEFAULT_TIPTAP_CONTENT,
+             isPermanent: true,
+             createdAt: new Date().toISOString(),
+             updatedAt: new Date().toISOString(),
+           };
+         }
+         return undefined;
+       })())
     : undefined;
   
   const [isShortcutsOpen, setShortcutsOpen] = useState(false);
+  const [isRecoveryOpen, setRecoveryOpen] = useState(false);
   const [isGoogleDocsImportOpen, setGoogleDocsImportOpen] = useState(false);
   const [isGoogleDocsExportOpen, setGoogleDocsExportOpen] = useState(false);
   const [isGoogleDocsSyncOpen, setGoogleDocsSyncOpen] = useState(false);
+  const [isGoogleDriveBackupOpen, setGoogleDriveBackupOpen] = useState(false);
+  const [isPdfExportOpen, setPdfExportOpen] = useState(false);
+  const [isAudioExportAllOpen, setIsAudioExportAllOpen] = useState(false);
   
-  // Autosave hook
+  // Autosave hook - saves directly to .sbk file
   const { 
     status: autosaveStatus, 
-    lastSaved, 
-    hasRecoveryData, 
-    recoverData, 
-    dismissRecovery,
-    clearSavedData,
-    storageType,
-    lastSaveSize,
+    lastSaved,
+    filePath,
   } = useAutosave({ debounceMs: 2000, intervalMs: 30000 });
   
   const { handleNew, handleOpen, handleSave, handleSaveAs, handleExportDocx, handleExportPdf } = useFileOperations();
   
-  // Clear autosave data after manual save
-  const handleSaveWithClear = () => {
-    handleSave();
-    // Clear autosave after save attempt - the file service will handle errors
-    clearSavedData();
+  const triggerFormatDocument = () => {
+    window.dispatchEvent(new CustomEvent('storybook:format-document'));
   };
-  
-  const handleSaveAsWithClear = () => {
-    handleSaveAs();
-    // Clear autosave after save attempt
-    clearSavedData();
-  };
-  
+
   // Set up keyboard shortcuts
   useKeyboardShortcuts({
-    onSave: handleSaveWithClear,
-    onSaveAs: handleSaveAsWithClear,
+    onSave: handleSave,
+    onSaveAs: handleSaveAs,
     onOpen: handleOpen,
     onNew: handleNew,
     onExportDocx: handleExportDocx,
-    onExportPdf: handleExportPdf,
+    onExportPdf: () => setPdfExportOpen(true),
     onShowShortcuts: () => setShortcutsOpen(true),
+    onFormatDocument: triggerFormatDocument,
   });
   
   // Set up menu event listeners
   useMenuEvents({
     onNew: handleNew,
     onOpen: handleOpen,
-    onSave: handleSaveWithClear,
-    onSaveAs: handleSaveAsWithClear,
+    onSave: handleSave,
+    onSaveAs: handleSaveAs,
     onExportDocx: handleExportDocx,
-    onExportPdf: handleExportPdf,
+    onExportPdf: () => setPdfExportOpen(true),
     onSettings: () => setSettingsOpen(true),
     onToggleChapters: toggleChaptersPanel,
     onToggleAI: toggleAIPanel,
@@ -95,6 +179,8 @@ const App: React.FC = () => {
     onImportGoogleDocs: () => setGoogleDocsImportOpen(true),
     onExportGoogleDocs: () => setGoogleDocsExportOpen(true),
     onSyncGoogleDocs: () => setGoogleDocsSyncOpen(true),
+    onExportAllAudio: () => setIsAudioExportAllOpen(true),
+    onFormatDocument: triggerFormatDocument,
   });
 
   // Window title
@@ -107,37 +193,49 @@ const App: React.FC = () => {
 
   return (
     <div className="app">
-      {/* Recovery Dialog */}
-      {hasRecoveryData && (
-        <RecoveryDialog 
-          timestamp={getAutosaveTimestamp()} 
-          onRecover={recoverData} 
-          onDiscard={dismissRecovery} 
-        />
-      )}
-      
       {/* Title bar drag region */}
       <div className="titlebar drag-region">
         <span className="titlebar-title">{book.title}</span>
         {ui.isDirty && <span className="titlebar-dirty">•</span>}
-        <AutosaveIndicator status={autosaveStatus} lastSaved={lastSaved} storageType={storageType} saveSize={lastSaveSize} />
+        <BackgroundTaskIndicator />
+        <AutosaveIndicator status={autosaveStatus} lastSaved={lastSaved} filePath={filePath} />
       </div>
       
       {/* Toolbar */}
       <Toolbar 
-        onShowShortcuts={() => setShortcutsOpen(true)} 
+        onShowShortcuts={() => setShortcutsOpen(true)}
+        onShowRecovery={() => setRecoveryOpen(true)}
         onImportGoogleDocs={() => setGoogleDocsImportOpen(true)}
         onExportGoogleDocs={() => setGoogleDocsExportOpen(true)}
         onSyncGoogleDocs={() => setGoogleDocsSyncOpen(true)}
+        onGoogleDriveBackup={() => setGoogleDriveBackupOpen(true)}
       />
       
       {/* Main content area */}
       <div className="main-content">
-        {/* Left panel - Chapters */}
-        {ui.showChaptersPanel && (
-          <aside className="panel panel-left">
+        {/* Left panel - Chapters (resizable, closeable) */}
+        {ui.showChaptersPanel ? (
+          <ResizablePanel
+            side="left"
+            title="Chapters"
+            width={ui.leftPanelWidth}
+            minWidth={180}
+            maxWidth={500}
+            onClose={toggleChaptersPanel}
+            onResize={setLeftPanelWidth}
+            headerActions={<ChapterListHeaderActions />}
+          >
             <ChapterList />
-          </aside>
+          </ResizablePanel>
+        ) : (
+          <button
+            type="button"
+            className="panel-tab"
+            onClick={toggleChaptersPanel}
+            title="Show Chapters panel"
+          >
+            Chapters
+          </button>
         )}
         
         {/* Center - Editor or Document Tab Viewer */}
@@ -151,11 +249,29 @@ const App: React.FC = () => {
           )}
         </main>
         
-        {/* Right panel - AI Assistant */}
-        {ui.showAIPanel && (
-          <aside className="panel panel-right">
+        {/* Right panel - AI Assistant (resizable, closeable) */}
+        {ui.showAIPanel ? (
+          <ResizablePanel
+            side="right"
+            title="AI Assistant"
+            width={ui.rightPanelWidth}
+            minWidth={280}
+            maxWidth={600}
+            onClose={toggleAIPanel}
+            onResize={setRightPanelWidth}
+            headerActions={<AIPanelHeaderActions />}
+          >
             <AIPanel />
-          </aside>
+          </ResizablePanel>
+        ) : (
+          <button
+            type="button"
+            className="panel-tab panel-tab-right"
+            onClick={toggleAIPanel}
+            title="Show AI Assistant panel"
+          >
+            AI
+          </button>
         )}
       </div>
       
@@ -167,6 +283,11 @@ const App: React.FC = () => {
       {/* Keyboard Shortcuts Dialog */}
       {isShortcutsOpen && (
         <KeyboardShortcutsDialog onClose={() => setShortcutsOpen(false)} />
+      )}
+      
+      {/* Recovery Tool Dialog */}
+      {isRecoveryOpen && (
+        <RecoveryTool onClose={() => setRecoveryOpen(false)} />
       )}
       
       {/* Google Docs Import Dialog */}
@@ -183,9 +304,32 @@ const App: React.FC = () => {
       {isGoogleDocsSyncOpen && (
         <GoogleDocsSyncDialog onClose={() => setGoogleDocsSyncOpen(false)} />
       )}
+      
+      {/* Google Drive Backup Dialog */}
+      {isGoogleDriveBackupOpen && (
+        <GoogleDriveBackupDialog 
+          isOpen={isGoogleDriveBackupOpen} 
+          onClose={() => setGoogleDriveBackupOpen(false)} 
+        />
+      )}
+      
+      {/* PDF Export Dialog */}
+      {isPdfExportOpen && (
+        <PdfExportDialog onClose={() => setPdfExportOpen(false)} />
+      )}
+      {isAudioExportAllOpen && (
+        <AudioExportDialog
+          isOpen={true}
+          onClose={() => setIsAudioExportAllOpen(false)}
+          chapterId=""
+          exportAll
+        />
+      )}
+      
+      {/* Toast Notifications */}
+      <ToastContainer />
     </div>
   );
 };
 
 export default App;
-

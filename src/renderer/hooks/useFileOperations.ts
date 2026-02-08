@@ -58,60 +58,8 @@ export function useFileOperations() {
     setCurrentFilePath 
   } = useBookStore();
 
-  const handleNew = useCallback(async () => {
-    if (ui.isDirty) {
-      const shouldSave = confirm('You have unsaved changes. Would you like to save before creating a new book?');
-      if (shouldSave) {
-        await handleSave();
-      }
-    }
-    newBook();
-  }, [ui.isDirty, newBook]);
-
-  const handleOpen = useCallback(async () => {
-    if (!isElectron()) {
-      alert('File operations require running in Electron.');
-      return;
-    }
-    
-    try {
-      const result = await window.electronAPI.openFile();
-      if (result) {
-        const loadedBook = await fileService.loadBook(result.data);
-        setBook(loadedBook);
-        setCurrentFilePath(result.filePath);
-        
-        // Remember this file as the last opened
-        await saveLastFilePath(result.filePath);
-      }
-    } catch (error) {
-      console.error('Error opening file:', error);
-      alert('Failed to open file. Please make sure it is a valid .sbk file.');
-    }
-  }, [setBook, setCurrentFilePath]);
-
-  // Open a specific file by path
-  const openFilePath = useCallback(async (filePath: string) => {
-    if (!isElectron()) return false;
-    
-    try {
-      const data = await window.electronAPI.readFile(filePath);
-      if (data) {
-        const loadedBook = await fileService.loadBook(data);
-        setBook(loadedBook);
-        setCurrentFilePath(filePath);
-        console.log('Opened last file:', filePath);
-        return true;
-      }
-    } catch (error) {
-      console.error('Error opening file:', error);
-      // Clear the last file if it can't be opened
-      clearLastFilePath();
-    }
-    return false;
-  }, [setBook, setCurrentFilePath]);
-
-  const handleSave = useCallback(async () => {
+  // Define handleSave first since handleNew depends on it
+  const handleSave = useCallback(async (): Promise<boolean> => {
     if (!isElectron()) {
       // In browser mode, save to localStorage as a demo
       try {
@@ -119,10 +67,11 @@ export function useFileOperations() {
         localStorage.setItem('storybook-autosave', data);
         setDirty(false);
         console.log('Saved to localStorage');
+        return true;
       } catch (error) {
         console.error('Error saving:', error);
+        return false;
       }
-      return;
     }
     
     try {
@@ -134,17 +83,88 @@ export function useFileOperations() {
         setDirty(false);
         // Remember this file as the last opened
         await saveLastFilePath(filePath);
+        return true;
       }
+      // User cancelled the save dialog
+      return false;
     } catch (error) {
       console.error('Error saving file:', error);
       alert('Failed to save file.');
+      return false;
     }
   }, [book, ui.currentFilePath, setCurrentFilePath, setDirty]);
 
-  const handleSaveAs = useCallback(async () => {
+  const handleNew = useCallback(async () => {
+    if (ui.isDirty) {
+      const shouldSave = confirm('You have unsaved changes. Would you like to save before creating a new book?');
+      if (shouldSave) {
+        const saved = await handleSave();
+        // If user wanted to save but cancelled or save failed, don't create new book
+        if (!saved) {
+          return;
+        }
+      }
+    }
+    newBook();
+  }, [ui.isDirty, newBook, handleSave]);
+
+  const handleOpen = useCallback(async () => {
+    if (!isElectron()) {
+      alert('File operations require running in Electron.');
+      return;
+    }
+    
+    try {
+      const result = await window.electronAPI.openFile();
+      if (result) {
+        console.log('[FileOps] Opening file:', result.filePath);
+        console.log('[FileOps] Data length:', result.data?.length || 0);
+        
+        const loadedBook = await fileService.loadBook(result.data);
+        console.log('[FileOps] Loaded book:', loadedBook.title, 'with', loadedBook.chapters.length, 'chapters');
+        
+        setBook(loadedBook);
+        setCurrentFilePath(result.filePath);
+        
+        // Remember this file as the last opened
+        await saveLastFilePath(result.filePath);
+      }
+    } catch (error) {
+      console.error('Error opening file:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to open file: ${errorMessage}\n\nPlease check if the file is corrupted. You may have backup files (filename.sbk.backup1, etc.) you can try.`);
+    }
+  }, [setBook, setCurrentFilePath]);
+
+  // Open a specific file by path
+  const openFilePath = useCallback(async (filePath: string) => {
+    if (!isElectron()) return false;
+    
+    try {
+      console.log('[FileOps] Reading file:', filePath);
+      const data = await window.electronAPI.readFile(filePath);
+      if (data) {
+        console.log('[FileOps] File data length:', data.length);
+        const loadedBook = await fileService.loadBook(data);
+        setBook(loadedBook);
+        setCurrentFilePath(filePath);
+        console.log('[FileOps] Opened file:', filePath, 'with', loadedBook.chapters.length, 'chapters');
+        return true;
+      } else {
+        console.error('[FileOps] File returned null data');
+      }
+    } catch (error) {
+      console.error('[FileOps] Error opening file:', error);
+      // Clear the last file if it can't be opened
+      clearLastFilePath();
+    }
+    return false;
+  }, [setBook, setCurrentFilePath]);
+
+  const handleSaveAs = useCallback(async (): Promise<boolean> => {
     if (!isElectron()) {
       alert('Save As requires running in Electron.');
-      return;
+      return false;
     }
     
     try {
@@ -156,10 +176,14 @@ export function useFileOperations() {
         setDirty(false);
         // Remember this file as the last opened
         await saveLastFilePath(filePath);
+        return true;
       }
+      // User cancelled the save dialog
+      return false;
     } catch (error) {
       console.error('Error saving file:', error);
       alert('Failed to save file.');
+      return false;
     }
   }, [book, setCurrentFilePath, setDirty]);
 
@@ -185,27 +209,18 @@ export function useFileOperations() {
     
     try {
       const data = await exportService.exportToDocx(book);
-      await window.electronAPI.exportDocx(data);
+      await window.electronAPI.exportDocx(data, book.title);
     } catch (error) {
       console.error('Error exporting DOCX:', error);
       alert('Failed to export DOCX.');
     }
   }, [book]);
 
-  const handleExportPdf = useCallback(async () => {
-    if (!isElectron()) {
-      alert('PDF export requires running in Electron.');
-      return;
-    }
-    
-    try {
-      const data = await exportService.exportToPdf(book);
-      await window.electronAPI.exportPdf(data);
-    } catch (error) {
-      console.error('Error exporting PDF:', error);
-      alert('Failed to export PDF.');
-    }
-  }, [book]);
+  const handleExportPdf = useCallback(() => {
+    // PDF export now opens a dialog - this will be handled by App.tsx
+    // This function is kept for menu/keyboard shortcut compatibility
+    // The actual dialog opening is handled in App.tsx via state
+  }, []);
 
   // Track if we've attempted to load the last file
   const hasAttemptedLastFile = useRef(false);
@@ -237,4 +252,3 @@ export function useFileOperations() {
     openFilePath,
   };
 }
-

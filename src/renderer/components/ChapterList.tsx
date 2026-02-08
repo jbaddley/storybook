@@ -1,6 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { DocumentTabs } from './DocumentTabs';
+import { TipTapContent } from '../../shared/types';
+import { ChapterVariationDialog } from './ChapterVariationDialog';
+import { ChapterDetailsDialog } from './ChapterDetailsDialog';
+import { AudioExportDialog } from './AudioExportDialog';
+
+function extractTextFromContent(content: TipTapContent | undefined): string {
+  if (!content?.content) return '';
+  const extractFromNode = (node: any): string => {
+    if (node.text) return node.text;
+    if (node.content) return node.content.map(extractFromNode).join(node.type === 'paragraph' ? '\n' : '');
+    return '';
+  };
+  return content.content.map(extractFromNode).join('\n\n');
+}
 
 // Icons
 const DocumentIcon = () => (
@@ -27,13 +41,6 @@ const TrashIcon = () => (
   </svg>
 );
 
-const EditIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-  </svg>
-);
-
 const ListOrderedIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
     <line x1="10" y1="6" x2="21" y2="6"/>
@@ -45,6 +52,302 @@ const ListOrderedIcon = () => (
   </svg>
 );
 
+const InsertIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <line x1="12" y1="5" x2="12" y2="19"/>
+    <line x1="5" y1="12" x2="19" y2="12"/>
+  </svg>
+);
+
+const SparklesIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/>
+    <path d="M5 19l.5 1.5L7 21l-1.5.5L5 23l-.5-1.5L3 21l1.5-.5L5 19z"/>
+    <path d="M19 5l.5 1.5L21 7l-1.5.5L19 9l-.5-1.5L17 7l1.5-.5L19 5z"/>
+  </svg>
+);
+
+const VariationIndicator = () => (
+  <span className="variation-indicator" title="Has variation">
+    <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12">
+      <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/>
+    </svg>
+  </span>
+);
+
+const AudioIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <path d="M9 18V5l12-2v13"/>
+    <circle cx="6" cy="18" r="3"/>
+    <circle cx="18" cy="16" r="3"/>
+  </svg>
+);
+
+const PlayIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <polygon points="5 3 19 12 5 21 5 3"/>
+  </svg>
+);
+
+const CheckIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <polyline points="20,6 9,17 4,12"/>
+  </svg>
+);
+
+const OriginalSavedIndicator = () => (
+  <span className="original-saved-indicator" title="Original content saved">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+      <path d="M3 3v5h5"/>
+    </svg>
+  </span>
+);
+
+const RestoreIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+    <path d="M3 3v5h5"/>
+  </svg>
+);
+
+const ChevronDownIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+    <polyline points="6,9 12,15 18,9"/>
+  </svg>
+);
+
+const MenuIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+    <circle cx="12" cy="12" r="1"/>
+    <circle cx="12" cy="5" r="1"/>
+    <circle cx="12" cy="19" r="1"/>
+  </svg>
+);
+
+/** Header actions: Add Chapter + Renumber only */
+export const ChapterListHeaderActions: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const { addChapter, renumberChapters } = useBookStore();
+
+  useEffect(() => {
+    const onOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    if (open) {
+      document.addEventListener('mousedown', onOutside);
+      return () => document.removeEventListener('mousedown', onOutside);
+    }
+  }, [open]);
+
+  return (
+    <div className="panel-actions-dropdown" ref={ref}>
+      <button
+        type="button"
+        className="panel-actions-dropdown-trigger panel-actions-dropdown-trigger-icon-only"
+        onClick={() => setOpen((o) => !o)}
+        title="Chapter actions"
+      >
+        <MenuIcon />
+      </button>
+      {open && (
+        <div className="panel-actions-dropdown-menu">
+          <button type="button" onClick={() => { addChapter(); setOpen(false); }}>
+            <PlusIcon />
+            Add Chapter
+          </button>
+          <button type="button" onClick={() => { renumberChapters(); setOpen(false); }}>
+            <ListOrderedIcon />
+            Renumber chapters
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AUDIO_EXPORT_PATH_KEY = (bookId: string, chapterId: string) =>
+  `audio-export-path:${bookId}:${chapterId}`;
+
+/** Per-row actions dropdown for one chapter */
+function ChapterRowActions({
+  chapter,
+  index,
+  bookId,
+  onVariationDialog,
+  onAudioExport,
+  onPurposeDialog,
+}: {
+  chapter: { id: string; title: string; originalContent?: unknown };
+  index: number;
+  bookId: string;
+  onVariationDialog: (id: string) => void;
+  onAudioExport: (id: string) => void;
+  onPurposeDialog: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [lastExportedAudioPath, setLastExportedAudioPath] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const {
+    updateChapter,
+    insertChapterAt,
+    deleteChapter,
+    getChapterVariation,
+    applyVariation,
+    discardVariation,
+    restoreOriginal,
+    clearOriginal,
+    getSortedChapters,
+  } = useBookStore();
+  const chapters = getSortedChapters();
+  const hasVariation = !!getChapterVariation(chapter.id);
+  const hasOriginal = !!chapter.originalContent;
+
+  useEffect(() => {
+    const onOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    if (open) {
+      document.addEventListener('mousedown', onOutside);
+      return () => document.removeEventListener('mousedown', onOutside);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !bookId || !chapter.id || typeof window.electronAPI?.storeGet !== 'function') return;
+    window.electronAPI.storeGet(AUDIO_EXPORT_PATH_KEY(bookId, chapter.id)).then((value) => {
+      setLastExportedAudioPath(typeof value === 'string' ? value : null);
+    });
+  }, [open, bookId, chapter.id]);
+
+  const runAndClose = (fn: () => void) => {
+    fn();
+    setOpen(false);
+  };
+
+  const handlePlayAudio = () => {
+    if (!lastExportedAudioPath || typeof window.electronAPI?.getAudioPlaybackUrl !== 'function') return;
+    window.electronAPI.getAudioPlaybackUrl(lastExportedAudioPath).then((url) => {
+      const audio = new Audio(url);
+      audio.play().catch((err) => console.warn('[ChapterList] Audio play failed:', err));
+    });
+    setOpen(false);
+  };
+
+  return (
+    <div className="chapter-row-actions" ref={ref} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="chapter-row-actions-trigger"
+        onClick={() => setOpen((o) => !o)}
+        title="Chapter actions"
+      >
+        <MenuIcon />
+      </button>
+      {open && (
+        <div className="panel-actions-dropdown-menu chapter-row-actions-menu">
+          <button
+            type="button"
+            onClick={() => runAndClose(() => onPurposeDialog(chapter.id))}
+          >
+            Chapter details…
+          </button>
+          <button
+            type="button"
+            onClick={() => runAndClose(() => insertChapterAt(index + 1))}
+          >
+            <InsertIcon />
+            Insert chapter below
+          </button>
+          <button type="button" onClick={() => runAndClose(() => onVariationDialog(chapter.id))}>
+            <SparklesIcon />
+            {hasVariation ? 'View/Edit variation' : 'Generate variation'}
+          </button>
+          <button type="button" onClick={() => runAndClose(() => onAudioExport(chapter.id))}>
+            <AudioIcon />
+            Export as audio
+          </button>
+          <button
+            type="button"
+            onClick={lastExportedAudioPath ? handlePlayAudio : undefined}
+            disabled={!lastExportedAudioPath}
+            title={lastExportedAudioPath ? 'Play the latest exported audio for this chapter' : 'Export and save audio first, then you can play it here'}
+          >
+            <PlayIcon />
+            Play exported audio
+          </button>
+          {hasVariation && (
+            <>
+              <button type="button" onClick={() => runAndClose(() => applyVariation(chapter.id))}>
+                <CheckIcon />
+                Apply variation
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  runAndClose(() => {
+                    if (confirm('Discard this variation?')) discardVariation(chapter.id);
+                  })
+                }
+              >
+                <TrashIcon />
+                Discard variation
+              </button>
+            </>
+          )}
+          {hasOriginal && !hasVariation && (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  runAndClose(() => {
+                    if (confirm('Restore the original content?'))
+                      restoreOriginal(chapter.id);
+                  })
+                }
+              >
+                <RestoreIcon />
+                Restore original
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  runAndClose(() => {
+                    if (
+                      confirm(
+                        'Discard the saved original? You will keep the current variation.'
+                      )
+                    )
+                      clearOriginal(chapter.id);
+                  })
+                }
+              >
+                <TrashIcon />
+                Discard saved original
+              </button>
+            </>
+          )}
+          {!hasVariation && !hasOriginal && chapters.length > 1 && (
+            <button
+              type="button"
+              onClick={() =>
+                runAndClose(() => {
+                  if (confirm('Are you sure you want to delete this chapter?'))
+                    deleteChapter(chapter.id);
+                })
+              }
+            >
+              <TrashIcon />
+              Delete chapter
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const ChapterList: React.FC = () => {
   const { 
     book, 
@@ -52,49 +355,29 @@ export const ChapterList: React.FC = () => {
     ui,
     setActiveChapter, 
     setActiveDocumentTab,
-    addChapter, 
+    addChapter,
+    insertChapterAt,
     deleteChapter,
     updateChapter,
     renumberChapters,
-    getSortedChapters
+    getSortedChapters,
+    getChapterVariation,
+    getStoryCraftFeedback,
+    applyVariation,
+    discardVariation,
+    restoreOriginal,
+    clearOriginal
   } = useBookStore();
   
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState('');
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [variationDialogChapterId, setVariationDialogChapterId] = useState<string | null>(null);
+  const [audioExportChapterId, setAudioExportChapterId] = useState<string | null>(null);
+  const [detailsDialogChapterId, setDetailsDialogChapterId] = useState<string | null>(null);
 
   const chapters = getSortedChapters();
-
-  const handleStartEdit = (chapter: { id: string; title: string }) => {
-    setEditingId(chapter.id);
-    setEditTitle(chapter.title);
-  };
-
-  const handleSaveEdit = () => {
-    if (editingId && editTitle.trim()) {
-      updateChapter(editingId, { title: editTitle.trim() });
-    }
-    setEditingId(null);
-    setEditTitle('');
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSaveEdit();
-    } else if (e.key === 'Escape') {
-      setEditingId(null);
-      setEditTitle('');
-    }
-  };
-
-  const handleDelete = (chapterId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (chapters.length > 1) {
-      if (confirm('Are you sure you want to delete this chapter?')) {
-        deleteChapter(chapterId);
-      }
-    }
-  };
+  const detailsDialogChapter = detailsDialogChapterId
+    ? book.chapters.find((c) => c.id === detailsDialogChapterId)
+    : null;
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIndex(index);
@@ -126,117 +409,128 @@ export const ChapterList: React.FC = () => {
     return count.toString();
   };
 
+  const getStoryCraftScore = (chapterId: string): number | null => {
+    const feedback = getStoryCraftFeedback(chapterId);
+    if (!feedback?.assessment) return null;
+    const a = feedback.assessment;
+    return (
+      (a.plotProgression.score +
+        a.characterDevelopment.score +
+        a.themeReinforcement.score +
+        a.pacing.score +
+        a.conflictTension.score +
+        a.hookEnding.score) /
+      6
+    );
+  };
+
+  const getScoreColor = (score: number): string => {
+    if (score >= 4) return 'var(--accent-success)';
+    if (score >= 3) return 'var(--accent-warning)';
+    return 'var(--accent-error)';
+  };
+
+  const getScoreLabel = (score: number): string => {
+    if (score >= 5) return 'Excellent';
+    if (score >= 4) return 'Good';
+    if (score >= 3) return 'Fair';
+    if (score >= 2) return 'Needs Work';
+    return 'Poor';
+  };
+
   return (
     <>
-      <div className="panel-header">
-        <span>Chapters</span>
-        <span className="text-muted" style={{ fontSize: '11px' }}>
-          {chapters.length} chapters
-        </span>
-      </div>
-      <div className="panel-content">
-        <ul className="chapter-list">
-          {chapters.map((chapter, index) => (
-            <li
-              key={chapter.id}
-              className={`chapter-item ${chapter.id === activeChapterId && !ui.activeDocumentTabId ? 'active' : ''}`}
-              onClick={() => {
-                setActiveDocumentTab(null); // Clear document tab selection
-                setActiveChapter(chapter.id);
-              }}
-              draggable
-              onDragStart={(e) => handleDragStart(e, index)}
-              onDragOver={(e) => handleDragOver(e, index)}
-              onDrop={(e) => handleDrop(e, index)}
-              onDragEnd={handleDragEnd}
-              style={{
-                opacity: draggedIndex === index ? 0.5 : 1,
-              }}
-            >
-              <DocumentIcon />
-              
-              {editingId === chapter.id ? (
-                <input
-                  type="text"
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  onBlur={handleSaveEdit}
-                  onKeyDown={handleKeyDown}
-                  onClick={(e) => e.stopPropagation()}
-                  autoFocus
-                  style={{
-                    flex: 1,
-                    background: 'var(--bg-input)',
-                    border: '1px solid var(--accent-primary)',
-                    borderRadius: '3px',
-                    padding: '2px 6px',
-                    fontSize: '14px',
-                  }}
-                />
-              ) : (
-                <>
-                  <span className="chapter-item-title">{chapter.title}</span>
-                  <span className="chapter-item-words">
-                    {formatWordCount(chapter.wordCount)}
-                  </span>
-                  <div 
-                    className="chapter-item-actions"
-                    style={{ 
-                      display: 'flex', 
-                      gap: '4px', 
-                      marginLeft: '8px',
-                      opacity: chapter.id === activeChapterId ? 1 : 0,
-                      transition: 'opacity 0.15s ease',
-                    }}
-                  >
-                    <button
-                      className="toolbar-btn"
-                      style={{ width: '24px', height: '24px' }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleStartEdit(chapter);
-                      }}
-                      title="Rename"
-                    >
-                      <EditIcon />
-                    </button>
-                    {chapters.length > 1 && (
-                      <button
-                        className="toolbar-btn"
-                        style={{ width: '24px', height: '24px', color: 'var(--accent-error)' }}
-                        onClick={(e) => handleDelete(chapter.id, e)}
-                        title="Delete"
-                      >
-                        <TrashIcon />
-                      </button>
-                    )}
+      <div className="chapters-panel">
+        <div className="chapters-panel-scroll">
+          <div className="text-muted" style={{ fontSize: '11px', marginBottom: '8px' }}>
+            {chapters.length} chapters
+          </div>
+          <ul className="chapter-list">
+            {chapters.map((chapter, index) => (
+              <li
+                key={chapter.id}
+                className={`chapter-item ${chapter.id === activeChapterId && !ui.activeDocumentTabId ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveDocumentTab(null);
+                  setActiveChapter(chapter.id);
+                }}
+                draggable
+                onDragStart={(e) => handleDragStart(e, index)}
+                onDragOver={(e) => handleDragOver(e, index)}
+                onDrop={(e) => handleDrop(e, index)}
+                onDragEnd={handleDragEnd}
+                style={{
+                  opacity: draggedIndex === index ? 0.5 : 1,
+                }}
+              >
+                <div className="chapter-item-row1">
+                  <div className="chapter-item-row1-left">
+                    <DocumentIcon />
+                    <span className="chapter-item-number">Chapter {chapter.order}</span>
                   </div>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-        
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button className="chapter-add-btn" onClick={addChapter} style={{ flex: 1 }}>
-            <PlusIcon />
-            <span>Add Chapter</span>
-          </button>
-          <button 
-            className="chapter-add-btn" 
-            onClick={renumberChapters}
-            title="Renumber all chapters sequentially (Chapter 1, Chapter 2, etc.)"
-            style={{ flex: 0, padding: '10px 12px' }}
-          >
-            <ListOrderedIcon />
-          </button>
+                  <div className="chapter-item-right">
+                    <span className="chapter-item-slot chapter-item-slot-indicator">
+                      {getChapterVariation(chapter.id) && <VariationIndicator />}
+                    </span>
+                    <span className="chapter-item-slot chapter-item-slot-indicator">
+                      {chapter.originalContent && !getChapterVariation(chapter.id) && <OriginalSavedIndicator />}
+                    </span>
+                    <span className="chapter-item-slot chapter-item-slot-words">
+                      {formatWordCount(chapter.wordCount)}
+                    </span>
+                    <span className="chapter-item-slot chapter-item-slot-score">
+                      {(() => {
+                        const score = getStoryCraftScore(chapter.id);
+                        if (score === null) return null;
+                        return (
+                          <span
+                            className="chapter-item-sc-score"
+                            style={{ backgroundColor: getScoreColor(score) }}
+                            title={`Story Craft: ${score.toFixed(1)} - ${getScoreLabel(score)}`}
+                          >
+                            {score.toFixed(1)}
+                          </span>
+                        );
+                      })()}
+                    </span>
+                    <span className="chapter-item-slot chapter-item-slot-actions">
+                      <ChapterRowActions
+                        chapter={chapter}
+                        index={index}
+                        bookId={book.id}
+                        onVariationDialog={setVariationDialogChapterId}
+                        onAudioExport={setAudioExportChapterId}
+                        onPurposeDialog={setDetailsDialogChapterId}
+                      />
+                    </span>
+                  </div>
+                </div>
+                <div className="chapter-item-row2">
+                  <span className="chapter-item-title">{chapter.title}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          <div className="chapter-add-row">
+            <button type="button" className="chapter-add-btn" onClick={addChapter}>
+              <PlusIcon />
+              <span>Add Chapter</span>
+            </button>
+            <button
+              type="button"
+              className="chapter-add-btn chapter-add-btn-icon"
+              onClick={renumberChapters}
+              title="Renumber all chapters sequentially (Chapter 1, Chapter 2, etc.)"
+            >
+              <ListOrderedIcon />
+            </button>
+          </div>
+
+          <DocumentTabs />
         </div>
 
-        {/* Document Tabs (Characters, Locations, Timeline, Custom) */}
-        <DocumentTabs />
-
-        {/* Book info */}
-        <div style={{ marginTop: '24px', padding: '12px', background: 'var(--bg-input)', borderRadius: '8px' }}>
+        <div className="chapters-panel-stats">
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '8px' }}>
             Book Stats
           </div>
@@ -250,6 +544,29 @@ export const ChapterList: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <ChapterVariationDialog
+        isOpen={variationDialogChapterId !== null}
+        onClose={() => setVariationDialogChapterId(null)}
+        chapterId={variationDialogChapterId || ''}
+      />
+      <ChapterDetailsDialog
+        isOpen={detailsDialogChapterId !== null}
+        onClose={() => setDetailsDialogChapterId(null)}
+        chapterTitle={detailsDialogChapter?.title ?? ''}
+        currentPurpose={detailsDialogChapter?.purpose}
+        chapterText={detailsDialogChapter ? extractTextFromContent(detailsDialogChapter.content) : ''}
+        storyCraftSummary={detailsDialogChapterId ? getStoryCraftFeedback(detailsDialogChapterId)?.summary : undefined}
+        onSave={(updates) => {
+          if (detailsDialogChapterId) updateChapter(detailsDialogChapterId, updates);
+          setDetailsDialogChapterId(null);
+        }}
+      />
+      <AudioExportDialog
+        isOpen={audioExportChapterId !== null}
+        onClose={() => setAudioExportChapterId(null)}
+        chapterId={audioExportChapterId || ''}
+      />
     </>
   );
 };

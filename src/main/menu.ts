@@ -1,14 +1,14 @@
-import { Menu, BrowserWindow, MenuItemConstructorOptions, app } from 'electron';
+import { Menu, BrowserWindow, MenuItemConstructorOptions } from 'electron';
 
 export function createApplicationMenu(mainWindow: BrowserWindow): Menu {
   const isMac = process.platform === 'darwin';
 
   const template: MenuItemConstructorOptions[] = [
-    // App menu (macOS only)
+    // App menu (macOS only) - fixed label so macOS menu bar shows "StoryBook" (not "Electron")
     ...(isMac
       ? [
           {
-            label: app.name,
+            label: 'StoryBook',
             submenu: [
               { role: 'about' as const },
               { type: 'separator' as const },
@@ -82,6 +82,10 @@ export function createApplicationMenu(mainWindow: BrowserWindow): Menu {
               label: 'Export as PDF...',
               click: () => mainWindow.webContents.send('menu:export-pdf'),
             },
+            {
+              label: 'Export all audio...',
+              click: () => mainWindow.webContents.send('menu:export-all-audio'),
+            },
           ],
         },
         { type: 'separator' },
@@ -126,6 +130,11 @@ export function createApplicationMenu(mainWindow: BrowserWindow): Menu {
           label: 'Replace',
           accelerator: 'CmdOrCtrl+H',
           click: () => mainWindow.webContents.send('menu:replace'),
+        },
+        {
+          label: 'Format Document',
+          accelerator: 'CmdOrCtrl+Alt+L',
+          click: () => mainWindow.webContents.send('menu:format-document'),
         },
       ],
     },

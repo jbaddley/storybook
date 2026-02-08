@@ -1,21 +1,18 @@
 /**
  * useAutosave Hook
- * Automatically saves book state to IndexedDB/localStorage with debouncing
+ * Automatically saves book to the .sbk file with debouncing
+ * Also syncs to database when user is authenticated
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useBookStore } from '../stores/bookStore';
-import {
-  saveAutosave,
-  loadAutosave,
-  hasAutosave as checkHasAutosave,
-  clearAutosave,
-  getAutosaveTimestamp,
-  formatBytes,
-} from '../services/storageService';
+import { fileService } from '../services/fileService';
+import { dbSyncService, ConflictWithResolution } from '../services/dbSyncService';
 
-export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error';
-export type StorageType = 'indexeddb' | 'localstorage';
+// Check if running in Electron
+const isElectron = () => typeof window !== 'undefined' && window.electronAPI !== undefined;
+
+export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'no-file' | 'syncing' | 'conflict';
 
 interface UseAutosaveOptions {
   /** Debounce delay in milliseconds (default: 2000) */
@@ -29,13 +26,11 @@ interface UseAutosaveOptions {
 interface UseAutosaveReturn {
   status: AutosaveStatus;
   lastSaved: Date | null;
-  hasRecoveryData: boolean;
-  recoverData: () => Promise<boolean>;
-  dismissRecovery: () => void;
   forceSave: () => void;
-  clearSavedData: () => void;
-  storageType: StorageType | null;
-  lastSaveSize: number | null;
+  filePath: string | null;
+  pendingConflicts: ConflictWithResolution[];
+  resolveConflicts: (resolutions: Map<string, 'keep_db' | 'keep_file' | 'keep_both'>) => Promise<void>;
+  dbSyncEnabled: boolean;
 }
 
 export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn {
@@ -46,89 +41,117 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
   } = options;
 
   const [status, setStatus] = useState<AutosaveStatus>('idle');
-  const [lastSaved, setLastSaved] = useState<Date | null>(getAutosaveTimestamp());
-  const [hasRecoveryData, setHasRecoveryData] = useState(false);
-  const [storageType, setStorageType] = useState<StorageType | null>(null);
-  const [lastSaveSize, setLastSaveSize] = useState<number | null>(null);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [pendingConflicts, setPendingConflicts] = useState<ConflictWithResolution[]>([]);
+  const [dbSyncEnabled, setDbSyncEnabled] = useState(false);
 
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const intervalTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isFirstRender = useRef(true);
   const isSaving = useRef(false);
+  const lastBookHash = useRef<string>('');
 
-  const { book, ai, activeChapterId, setBook, setAISummaries, setActiveChapter } = useBookStore();
+  const { book, ui, setDirty, setBook } = useBookStore();
+  const currentFilePath = ui.currentFilePath;
 
-  // Check for recovery data on mount - auto-recover silently
-  useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      
-      checkHasAutosave().then(async (hasData) => {
-        if (hasData) {
-          const timestamp = getAutosaveTimestamp();
-          console.log(`Found autosaved data from ${timestamp?.toLocaleString()}, auto-recovering...`);
-          
-          // Auto-recover silently instead of showing dialog
-          try {
-            const data = await loadAutosave();
-            if (data) {
-              setBook(data.book);
-              if (data.ai?.summaries) {
-                // Convert Record to Map if needed
-                const summariesMap = data.ai.summaries instanceof Map 
-                  ? data.ai.summaries 
-                  : new Map(Object.entries(data.ai.summaries));
-                setAISummaries(summariesMap);
-              }
-              if (data.activeChapterId) {
-                setActiveChapter(data.activeChapterId);
-              }
-              console.log('Successfully auto-recovered data');
-            }
-          } catch (error) {
-            console.error('Failed to auto-recover:', error);
-          }
-        }
-        // Never show the recovery dialog
-        setHasRecoveryData(false);
-      });
-    }
-  }, [setBook, setAISummaries, setActiveChapter]);
+  // Generate a simple hash of book content to detect changes
+  const getBookHash = useCallback(() => {
+    return JSON.stringify({
+      title: book.title,
+      chapters: book.chapters.map(c => ({ id: c.id, content: c.content, title: c.title })),
+      documentTabs: book.documentTabs?.map(t => ({ id: t.id, content: t.content })),
+      updatedAt: book.updatedAt,
+    });
+  }, [book]);
 
-  // Perform the actual save
+  // Perform the actual save to .sbk file and sync to database
   const performSave = useCallback(async () => {
-    if (!enabled || isSaving.current) return;
+    // Don't save if:
+    // - Not enabled
+    // - Already saving
+    // - No file path (user hasn't saved the file yet)
+    // - Not running in Electron
+    if (!enabled || isSaving.current || !currentFilePath || !isElectron()) {
+      if (!currentFilePath && enabled) {
+        setStatus('no-file');
+      }
+      return;
+    }
+
+    // Check if book actually changed since last save
+    const currentHash = getBookHash();
+    if (currentHash === lastBookHash.current) {
+      return; // No changes, skip save
+    }
 
     isSaving.current = true;
     setStatus('saving');
     
     try {
-      const result = await saveAutosave(book, ai, activeChapterId);
+      // Save book to .sbk format
+      const data = await fileService.saveBook(book);
       
-      if (result.success) {
-        setStatus('saved');
-        setLastSaved(new Date());
-        setStorageType(result.storage);
-        setLastSaveSize(result.size);
+      // Write to file via Electron IPC
+      const savedPath = await window.electronAPI.saveFile(data, currentFilePath);
+      
+      if (savedPath) {
+        lastBookHash.current = currentHash;
+        console.log(`[Autosave] Saved to ${savedPath}`);
         
-        // Log size for debugging large books
-        if (result.size > 1024 * 1024) { // > 1MB
-          console.log(`Autosave size: ${formatBytes(result.size)} (using ${result.storage})`);
+        // Now sync to database if user is authenticated
+        if (dbSyncEnabled && dbSyncService.getCurrentUserId()) {
+          setStatus('syncing');
+          
+          const syncResult = await dbSyncService.syncBook(book);
+          
+          if (syncResult.success) {
+            console.log('[Autosave] Synced to database');
+            setStatus('saved');
+            setLastSaved(new Date());
+            setDirty(false);
+          } else if (syncResult.conflicts && syncResult.conflicts.length > 0) {
+            // There are conflicts that need user resolution
+            console.log('[Autosave] Database sync has conflicts:', syncResult.conflicts);
+            setPendingConflicts(syncResult.conflicts);
+            setStatus('conflict');
+            setLastSaved(new Date()); // File was still saved
+            setDirty(false);
+          } else {
+            // Sync failed but file was saved
+            console.warn('[Autosave] Database sync failed:', syncResult.error);
+            setStatus('saved');
+            setLastSaved(new Date());
+            setDirty(false);
+          }
+        } else {
+          // No database sync, just file save
+          setStatus('saved');
+          setLastSaved(new Date());
+          setDirty(false);
         }
         
-        // Reset status after a short delay
-        setTimeout(() => setStatus('idle'), 2000);
+        // Reset status after a short delay (unless there are conflicts)
+        if (status !== 'conflict') {
+          setTimeout(() => {
+            if (pendingConflicts.length === 0) {
+              setStatus('idle');
+            }
+          }, 2000);
+        }
       } else {
+        // This shouldn't happen since we're providing the file path
         setStatus('error');
-        console.error('Autosave failed');
+        console.error('[Autosave] Save returned no path');
       }
     } catch (error) {
-      console.error('Autosave error:', error);
+      console.error('[Autosave] Error:', error);
       setStatus('error');
+      // Reset error status after a delay
+      setTimeout(() => setStatus('idle'), 5000);
     } finally {
       isSaving.current = false;
     }
-  }, [book, ai, activeChapterId, enabled]);
+  }, [book, currentFilePath, enabled, getBookHash, setDirty, dbSyncEnabled, status, pendingConflicts.length]);
 
   // Debounced save - triggers after changes
   const debouncedSave = useCallback(() => {
@@ -143,9 +166,16 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
 
   // Watch for changes and trigger debounced save
   useEffect(() => {
-    if (!enabled || isFirstRender.current) return;
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      // Initialize the hash on first render
+      lastBookHash.current = getBookHash();
+      return;
+    }
 
-    // Skip if book is empty/new and unchanged
+    if (!enabled || !currentFilePath) return;
+
+    // Skip if book is empty/new
     if (book.chapters.length === 0 && !book.title) return;
 
     debouncedSave();
@@ -155,11 +185,11 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [book, ai.summaries, ai.suggestions, debouncedSave, enabled]);
+  }, [book, debouncedSave, enabled, currentFilePath, getBookHash]);
 
-  // Periodic save interval
+  // Periodic save interval (as backup)
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !currentFilePath) return;
 
     intervalTimerRef.current = setInterval(() => {
       performSave();
@@ -170,42 +200,7 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
         clearInterval(intervalTimerRef.current);
       }
     };
-  }, [performSave, intervalMs, enabled]);
-
-  // Recover data from storage
-  const recoverData = useCallback(async (): Promise<boolean> => {
-    try {
-      const data = await loadAutosave();
-      if (!data) return false;
-
-      // Restore book state
-      setBook(data.book);
-      
-      // Restore AI state (summaries)
-      if (data.ai && data.ai.summaries) {
-        const summariesMap = new Map(Object.entries(data.ai.summaries));
-        setAISummaries(summariesMap);
-      }
-      
-      // Restore active chapter
-      if (data.activeChapterId) {
-        setActiveChapter(data.activeChapterId);
-      }
-
-      setHasRecoveryData(false);
-      console.log('Successfully recovered autosaved data');
-      return true;
-    } catch (error) {
-      console.error('Failed to recover data:', error);
-      return false;
-    }
-  }, [setBook, setAISummaries, setActiveChapter]);
-
-  // Dismiss recovery prompt without recovering
-  const dismissRecovery = useCallback(() => {
-    clearAutosave();
-    setHasRecoveryData(false);
-  }, []);
+  }, [performSave, intervalMs, enabled, currentFilePath]);
 
   // Force an immediate save
   const forceSave = useCallback(() => {
@@ -215,51 +210,98 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
     performSave();
   }, [performSave]);
 
-  // Clear saved data (call after manual file save)
-  const clearSavedData = useCallback(() => {
-    clearAutosave();
-    setLastSaved(null);
-  }, []);
-
-  // Save before page unload
+  // Save before page unload (best effort)
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (enabled) {
-        // Synchronous save attempt using localStorage as fallback
-        // (IndexedDB is async and may not complete before page closes)
-        try {
-          const data = {
-            id: 'current_session',
-            book,
-            ai: {
-              summaries: Object.fromEntries(ai.summaries),
-              suggestions: ai.suggestions,
-            },
-            activeChapterId,
-            timestamp: new Date().toISOString(),
-            version: 2,
-          };
-          localStorage.setItem('storybook_autosave', JSON.stringify(data));
-          localStorage.setItem('storybook_autosave_timestamp', data.timestamp);
-        } catch (e) {
-          console.warn('Could not save on unload:', e);
-        }
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (enabled && currentFilePath && ui.isDirty) {
+        // Trigger a save - note this may not complete before the page closes
+        // but at least we tried
+        performSave();
+        
+        // Show browser's "unsaved changes" warning if dirty
+        e.preventDefault();
+        e.returnValue = '';
       }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [book, ai, activeChapterId, enabled]);
+  }, [enabled, currentFilePath, ui.isDirty, performSave]);
+
+  // Update status when file path changes
+  useEffect(() => {
+    if (!currentFilePath && enabled) {
+      setStatus('no-file');
+    } else if (currentFilePath && status === 'no-file') {
+      setStatus('idle');
+    }
+  }, [currentFilePath, enabled, status]);
+
+  // Check if database sync should be enabled
+  useEffect(() => {
+    const checkDbConnection = async () => {
+      const userId = dbSyncService.getCurrentUserId();
+      const isConnected = userId ? await dbSyncService.isDatabaseAvailable() : false;
+      const shouldEnable = isConnected && !!userId;
+      
+      if (shouldEnable !== dbSyncEnabled) {
+        console.log('[Autosave] Database sync enabled:', shouldEnable, 'userId:', userId);
+      }
+      setDbSyncEnabled(shouldEnable);
+    };
+    
+    checkDbConnection();
+    
+    // Re-check more frequently to catch sign-in quickly
+    const interval = setInterval(checkDbConnection, 5000);
+    return () => clearInterval(interval);
+  }, [dbSyncEnabled]);
+
+  // Resolve conflicts callback
+  const resolveConflicts = useCallback(async (
+    resolutions: Map<string, 'keep_db' | 'keep_file' | 'keep_both'>
+  ) => {
+    if (pendingConflicts.length === 0) return;
+    
+    setStatus('syncing');
+    
+    try {
+      const result = await dbSyncService.resolveConflicts(book, resolutions);
+      
+      if (result.success) {
+        setPendingConflicts([]);
+        setStatus('saved');
+        
+        // If we kept DB versions for any chapters, we need to reload
+        const keptDbVersions = [...resolutions.values()].includes('keep_db');
+        if (keptDbVersions) {
+          // Reload book from sync service's merged state
+          const dbBook = await dbSyncService.loadBookFromDatabase(book.id);
+          if (dbBook) {
+            setBook(dbBook);
+          }
+        }
+        
+        setTimeout(() => setStatus('idle'), 2000);
+      } else {
+        console.error('[Autosave] Failed to resolve conflicts:', result.error);
+        setStatus('error');
+        setTimeout(() => setStatus('idle'), 5000);
+      }
+    } catch (error) {
+      console.error('[Autosave] Error resolving conflicts:', error);
+      setStatus('error');
+      setTimeout(() => setStatus('idle'), 5000);
+    }
+  }, [book, pendingConflicts.length, setBook]);
 
   return {
     status,
     lastSaved,
-    hasRecoveryData,
-    recoverData,
-    dismissRecovery,
     forceSave,
-    clearSavedData,
-    storageType,
-    lastSaveSize,
+    filePath: currentFilePath,
+    pendingConflicts,
+    resolveConflicts,
+    dbSyncEnabled,
   };
 }

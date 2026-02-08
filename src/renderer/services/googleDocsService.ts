@@ -17,6 +17,7 @@ export interface GoogleDriveFile {
   createdTime: string;
   iconLink?: string;
   webViewLink?: string;
+  size?: string;
 }
 
 export interface GoogleDocsDocument {
@@ -627,6 +628,9 @@ class GoogleDocsService {
       locations?: string;
       timeline?: string;
       summaries?: string;
+      storyCraft?: string;
+      themes?: string;
+      plotAnalysis?: string;
     },
     onProgress?: (message: string) => void,
     fontSettings?: {
@@ -670,6 +674,60 @@ class GoogleDocsService {
         currentIndex += 1;
       }
 
+      // Add chapter title as H1 header for Google Docs outline generation
+      const chapterNumber = i + 1;
+      const chapterHeaderText = `Chapter ${chapterNumber}`;
+      const headerStartIndex = currentIndex;
+      
+      // Insert the chapter header text with newline
+      mainRequests.push({
+        insertText: {
+          location: { index: currentIndex, ...(mainTabId && { tabId: mainTabId }) },
+          text: chapterHeaderText + '\n',
+        },
+      });
+      currentIndex += chapterHeaderText.length + 1;
+      
+      // Add empty line after header for spacing
+      mainRequests.push({
+        insertText: {
+          location: { index: currentIndex, ...(mainTabId && { tabId: mainTabId }) },
+          text: '\n',
+        },
+      });
+      currentIndex += 1;
+
+      // Now apply HEADING_1 style to the chapter header paragraph
+      mainRequests.push({
+        updateParagraphStyle: {
+          range: { 
+            startIndex: headerStartIndex, 
+            endIndex: headerStartIndex + chapterHeaderText.length + 1,
+            ...(mainTabId && { tabId: mainTabId })
+          },
+          paragraphStyle: { namedStyleType: 'HEADING_1' },
+          fields: 'namedStyleType',
+        },
+      });
+      
+      // Apply title font to chapter header text
+      if (fontSettings) {
+        mainRequests.push({
+          updateTextStyle: {
+            range: {
+              startIndex: headerStartIndex,
+              endIndex: headerStartIndex + chapterHeaderText.length,
+              ...(mainTabId && { tabId: mainTabId })
+            },
+            textStyle: {
+              weightedFontFamily: { fontFamily: fontSettings.titleFont },
+              fontSize: { magnitude: fontSettings.titleFontSize, unit: 'PT' },
+            },
+            fields: 'weightedFontFamily,fontSize',
+          },
+        });
+      }
+
       const contentResult = this.convertTipTapToGoogleDocsWithTab(chapter.content, currentIndex, mainTabId, fontSettings);
       mainRequests.push(...contentResult.requests);
       currentIndex = contentResult.endIndex;
@@ -692,6 +750,9 @@ class GoogleDocsService {
       { key: 'locations', title: '📍 LOCATIONS', content: references.locations },
       { key: 'timeline', title: '⏱️ TIMELINE', content: references.timeline },
       { key: 'summaries', title: '📝 CHAPTER SUMMARIES', content: references.summaries },
+      { key: 'storyCraft', title: '🎭 STORY CRAFT FEEDBACK', content: references.storyCraft },
+      { key: 'themes', title: '🎨 THEMES & MOTIFS', content: references.themes },
+      { key: 'plotAnalysis', title: '🔍 PLOT ERROR ANALYSIS', content: references.plotAnalysis },
     ].filter(s => s.content && s.content.trim());
 
     if (referenceSections.length > 0) {
@@ -882,6 +943,9 @@ class GoogleDocsService {
       locations?: string;
       timeline?: string;
       summaries?: string;
+      storyCraft?: string;
+      themes?: string;
+      plotAnalysis?: string;
     },
     folderId?: string,
     onProgress?: (message: string) => void,
@@ -921,7 +985,59 @@ class GoogleDocsService {
         currentIndex += 1;
       }
 
-      // Convert and add chapter content (title is already part of content)
+      // Add chapter title as H1 header for Google Docs outline generation
+      const chapterNumber = i + 1;
+      const chapterHeaderText = `Chapter ${chapterNumber}`;
+      const headerStartIndex = currentIndex;
+      
+      // Insert the chapter header text with newline
+      mainRequests.push({
+        insertText: {
+          location: { index: currentIndex },
+          text: chapterHeaderText + '\n',
+        },
+      });
+      currentIndex += chapterHeaderText.length + 1;
+      
+      // Add empty line after header for spacing
+      mainRequests.push({
+        insertText: {
+          location: { index: currentIndex },
+          text: '\n',
+        },
+      });
+      currentIndex += 1;
+
+      // Now apply HEADING_1 style to the chapter header paragraph
+      mainRequests.push({
+        updateParagraphStyle: {
+          range: { 
+            startIndex: headerStartIndex, 
+            endIndex: headerStartIndex + chapterHeaderText.length + 1,
+          },
+          paragraphStyle: { namedStyleType: 'HEADING_1' },
+          fields: 'namedStyleType',
+        },
+      });
+      
+      // Apply title font to chapter header text
+      if (fontSettings) {
+        mainRequests.push({
+          updateTextStyle: {
+            range: {
+              startIndex: headerStartIndex,
+              endIndex: headerStartIndex + chapterHeaderText.length,
+            },
+            textStyle: {
+              weightedFontFamily: { fontFamily: fontSettings.titleFont },
+              fontSize: { magnitude: fontSettings.titleFontSize, unit: 'PT' },
+            },
+            fields: 'weightedFontFamily,fontSize',
+          },
+        });
+      }
+
+      // Convert and add chapter content
       const contentResult = this.convertTipTapToGoogleDocs(chapter.content, currentIndex, fontSettings);
       mainRequests.push(...contentResult.requests);
       currentIndex = contentResult.endIndex;
@@ -945,6 +1061,9 @@ class GoogleDocsService {
       { key: 'locations', title: '📍 LOCATIONS', icon: '📍', content: references.locations },
       { key: 'timeline', title: '⏱️ TIMELINE', icon: '⏱️', content: references.timeline },
       { key: 'summaries', title: '📝 CHAPTER SUMMARIES', icon: '📝', content: references.summaries },
+      { key: 'storyCraft', title: '🎭 STORY CRAFT FEEDBACK', icon: '🎭', content: references.storyCraft },
+      { key: 'themes', title: '🎨 THEMES & MOTIFS', icon: '🎨', content: references.themes },
+      { key: 'plotAnalysis', title: '🔍 PLOT ERROR ANALYSIS', icon: '🔍', content: references.plotAnalysis },
     ].filter(s => s.content && s.content.trim());
 
     if (referenceSections.length > 0) {
@@ -1358,6 +1477,225 @@ class GoogleDocsService {
     }
 
     return requests;
+  }
+
+  // ============= DRIVE BACKUP METHODS =============
+
+  /**
+   * Upload .sbk file to Google Drive
+   */
+  async uploadSbkFile(
+    base64Data: string,
+    fileName: string,
+    folderId?: string,
+    existingFileId?: string,
+    onProgress?: (message: string) => void
+  ): Promise<{ fileId: string; webViewLink: string }> {
+    const accessToken = googleAuthService.getAccessToken();
+    if (!accessToken) throw new Error('Not authenticated');
+
+    if (!window.electronAPI?.googleApiUploadFile) {
+      throw new Error('Electron API not available for file upload');
+    }
+
+    onProgress?.('Uploading to Google Drive...');
+
+    // If updating existing file, use PATCH
+    if (existingFileId) {
+      onProgress?.('Updating existing backup...');
+      const result = await window.electronAPI.googleApiUploadFile({
+        accessToken,
+        fileId: existingFileId,
+        fileName,
+        base64Data,
+        mimeType: 'application/octet-stream',
+      });
+      
+      onProgress?.('Backup updated successfully!');
+      return {
+        fileId: result.id,
+        webViewLink: result.webViewLink || `https://drive.google.com/file/d/${result.id}/view`,
+      };
+    }
+
+    // Create new file
+    onProgress?.('Creating new backup file...');
+    const result = await window.electronAPI.googleApiUploadFile({
+      accessToken,
+      fileName,
+      base64Data,
+      mimeType: 'application/octet-stream',
+      folderId,
+    });
+
+    onProgress?.('Backup uploaded successfully!');
+    return {
+      fileId: result.id,
+      webViewLink: result.webViewLink || `https://drive.google.com/file/d/${result.id}/view`,
+    };
+  }
+
+  /**
+   * Download .sbk file from Google Drive
+   */
+  async downloadSbkFile(fileId: string): Promise<string> {
+    const accessToken = googleAuthService.getAccessToken();
+    if (!accessToken) throw new Error('Not authenticated');
+
+    if (!window.electronAPI?.googleApiDownloadFile) {
+      throw new Error('Electron API not available for file download');
+    }
+
+    const base64Data = await window.electronAPI.googleApiDownloadFile({
+      accessToken,
+      fileId,
+    });
+
+    return base64Data;
+  }
+
+  /**
+   * List .sbk files in Google Drive
+   */
+  async listSbkFiles(): Promise<GoogleDriveFile[]> {
+    const params = new URLSearchParams({
+      q: "name contains '.sbk' and trashed=false",
+      fields: 'files(id,name,mimeType,modifiedTime,createdTime,size,webViewLink)',
+      orderBy: 'modifiedTime desc',
+      pageSize: '50',
+    });
+
+    const data = await this.makeRequest<{ files: GoogleDriveFile[] }>(
+      `${DRIVE_API_BASE}/files?${params.toString()}`
+    );
+
+    return data.files || [];
+  }
+
+  /**
+   * Create a folder in Google Drive (for organizing backups)
+   */
+  async createFolder(name: string, parentId?: string): Promise<{ folderId: string }> {
+    const accessToken = googleAuthService.getAccessToken();
+    if (!accessToken) throw new Error('Not authenticated');
+
+    if (!window.electronAPI?.googleApiPost) {
+      throw new Error('Electron API not available');
+    }
+
+    const metadata: any = {
+      name,
+      mimeType: 'application/vnd.google-apps.folder',
+    };
+
+    if (parentId) {
+      metadata.parents = [parentId];
+    }
+
+    const result = await window.electronAPI.googleApiPost<{ id: string }>({
+      url: `${DRIVE_API_BASE}/files`,
+      accessToken,
+      body: JSON.stringify(metadata),
+    });
+
+    return { folderId: result.id };
+  }
+
+  /**
+   * Find or create the Storybook Backups folder
+   */
+  async getOrCreateBackupFolder(): Promise<string> {
+    // Search for existing folder
+    const params = new URLSearchParams({
+      q: "name='Storybook Backups' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+      fields: 'files(id,name)',
+    });
+
+    const data = await this.makeRequest<{ files: { id: string; name: string }[] }>(
+      `${DRIVE_API_BASE}/files?${params.toString()}`
+    );
+
+    if (data.files && data.files.length > 0) {
+      return data.files[0].id;
+    }
+
+    // Create new folder
+    const result = await this.createFolder('Storybook Backups');
+    return result.folderId;
+  }
+
+  /**
+   * Find or create the Storybook Audio folder
+   */
+  async getOrCreateAudioFolder(): Promise<string> {
+    // Search for existing folder
+    const params = new URLSearchParams({
+      q: "name='Storybook Audio' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+      fields: 'files(id,name)',
+    });
+
+    const data = await this.makeRequest<{ files: { id: string; name: string }[] }>(
+      `${DRIVE_API_BASE}/files?${params.toString()}`
+    );
+
+    if (data.files && data.files.length > 0) {
+      return data.files[0].id;
+    }
+
+    // Create new folder
+    const result = await this.createFolder('Storybook Audio');
+    return result.folderId;
+  }
+
+  /**
+   * Upload audio file (MP3) to Google Drive
+   * @param base64Data - The audio data as base64 string
+   * @param fileName - The name of the file
+   * @param folderId - Optional folder ID. If not provided, uses "Storybook Audio" folder
+   * @param onProgress - Optional progress callback
+   */
+  async uploadAudioFile(
+    base64Data: string,
+    fileName: string,
+    folderId?: string,
+    onProgress?: (message: string) => void
+  ): Promise<{ fileId: string; webViewLink: string }> {
+    const accessToken = googleAuthService.getAccessToken();
+    if (!accessToken) throw new Error('Not authenticated with Google');
+
+    if (!window.electronAPI?.googleApiUploadFile) {
+      throw new Error('Electron API not available for file upload');
+    }
+
+    // Use provided folder ID or default to "Storybook Audio" folder
+    let targetFolderId = folderId;
+    if (!targetFolderId) {
+      onProgress?.('Finding audio folder...');
+      targetFolderId = await this.getOrCreateAudioFolder();
+    }
+
+    onProgress?.('Uploading audio to Google Drive...');
+
+    const result = await window.electronAPI.googleApiUploadFile({
+      accessToken,
+      fileName,
+      base64Data,
+      mimeType: 'audio/mpeg',
+      folderId: targetFolderId,
+    });
+
+    onProgress?.('Audio uploaded successfully!');
+    return {
+      fileId: result.id,
+      webViewLink: result.webViewLink || `https://drive.google.com/file/d/${result.id}/view`,
+    };
+  }
+
+  /**
+   * Check if user is authenticated with Google
+   */
+  isAuthenticated(): boolean {
+    return googleAuthService.isAuthenticated();
   }
 }
 

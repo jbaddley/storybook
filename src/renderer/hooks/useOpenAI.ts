@@ -167,7 +167,7 @@ export function useOpenAI() {
     if (!text) return;
 
     try {
-      const events = await openAIService.extractTimeline(text, chapter.id);
+      const events = await openAIService.extractTimeline(text, chapter.id, book.settings.bookContext);
       const currentOrder = book.extracted.timeline.length;
       
       // Add each timeline event using the store method

@@ -1,6 +1,78 @@
 import React, { useState, useEffect } from 'react';
 import { useBookStore } from '../stores/bookStore';
-import { PageSize, Margins, DEFAULT_PAGE_SIZE, DEFAULT_MARGINS } from '../../shared/types';
+import { PageSize, Margins, DEFAULT_PAGE_SIZE, DEFAULT_MARGINS, BookContextSettings, DEFAULT_BOOK_CONTEXT } from '../../shared/types';
+
+// Genre options for dropdown
+const GENRE_OPTIONS = [
+  'Literary Fiction',
+  'Commercial Fiction',
+  'Thriller',
+  'Mystery',
+  'Romance',
+  'Science Fiction',
+  'Fantasy',
+  'Horror',
+  'Historical Fiction',
+  'Contemporary Fiction',
+  'Young Adult Fiction',
+  'Middle Grade Fiction',
+  'Memoir',
+  'Biography',
+  'Self-Help',
+  'Other',
+];
+
+// Common sub-genre options
+const SUB_GENRE_OPTIONS = [
+  'Coming-of-age',
+  'Psychological',
+  'Suspense',
+  'Cozy Mystery',
+  'Police Procedural',
+  'Paranormal',
+  'Urban Fantasy',
+  'Epic Fantasy',
+  'Space Opera',
+  'Dystopian',
+  'Post-Apocalyptic',
+  'Time Travel',
+  'Romantic Comedy',
+  'Historical Romance',
+  'Family Saga',
+  'War',
+  'Sports',
+  'Crime',
+  'Legal',
+  'Medical',
+  'Political',
+];
+
+// Target demographic options
+const DEMOGRAPHIC_OPTIONS = [
+  'Adult',
+  'Young Adult (13-18)',
+  'Middle Grade (8-12)',
+  "Children's (5-8)",
+  'New Adult (18-25)',
+  'All Ages',
+];
+
+// Time period options
+const TIME_PERIOD_OPTIONS = [
+  'Contemporary (2020s)',
+  'Recent Past (2000s-2010s)',
+  'Late 20th Century (1970s-1990s)',
+  'Mid 20th Century (1940s-1960s)',
+  'Early 20th Century (1900s-1930s)',
+  'Victorian Era (1837-1901)',
+  'Regency Era (1811-1820)',
+  'Renaissance (14th-17th Century)',
+  'Medieval (5th-15th Century)',
+  'Ancient (Before 5th Century)',
+  'Future/Sci-Fi',
+  'Timeless/Unspecified',
+  'Other',
+];
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -64,18 +136,31 @@ const CloseIcon = () => (
 );
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
-  const { book, updateBookMetadata } = useBookStore();
-  const [activeTab, setActiveTab] = useState<'general' | 'fonts' | 'page' | 'api'>('general');
+  const { book, updateBookMetadata, ui, setContentEditorTheme } = useBookStore();
+  const [activeTab, setActiveTab] = useState<'general' | 'context' | 'fonts' | 'page' | 'api'>('general');
   
   // Form state - General
   const [title, setTitle] = useState(book.title);
   const [author, setAuthor] = useState(book.author);
   const [description, setDescription] = useState(book.description);
   
+  // Form state - Book Context
+  const bookContext = book.settings.bookContext || DEFAULT_BOOK_CONTEXT;
+  const [genre, setGenre] = useState(bookContext.genre);
+  const [customGenre, setCustomGenre] = useState(GENRE_OPTIONS.includes(bookContext.genre) ? '' : bookContext.genre);
+  const [subGenres, setSubGenres] = useState<string[]>(bookContext.subGenres || []);
+  const [targetDemographic, setTargetDemographic] = useState(bookContext.targetDemographic);
+  const [timePeriod, setTimePeriod] = useState(bookContext.timePeriod);
+  const [customTimePeriod, setCustomTimePeriod] = useState(TIME_PERIOD_OPTIONS.includes(bookContext.timePeriod) ? '' : bookContext.timePeriod);
+  const [year, setYear] = useState(bookContext.year || '');
+  const [primaryLocation, setPrimaryLocation] = useState(bookContext.primaryLocation);
+  const [additionalContext, setAdditionalContext] = useState(bookContext.additionalContext);
+  
   // Form state - Page
   const [pageSize, setPageSize] = useState(book.settings.pageSize);
   const [margins, setMargins] = useState(book.settings.margins);
   const [lineSpacing, setLineSpacing] = useState(book.settings.lineSpacing);
+  const [paragraphSpacing, setParagraphSpacing] = useState(book.settings.paragraphSpacing || 0);
   
   // Form state - Fonts
   const [titleFont, setTitleFont] = useState(book.settings.titleFont || 'Carlito');
@@ -87,6 +172,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
   const [apiKey, setApiKey] = useState('');
   const [aiModel, setAiModel] = useState('gpt-5.2');
   const [apiKeyLoaded, setApiKeyLoaded] = useState(false);
+  
+  // Helper to toggle sub-genre
+  const toggleSubGenre = (subGenre: string) => {
+    if (subGenres.includes(subGenre)) {
+      setSubGenres(subGenres.filter(sg => sg !== subGenre));
+    } else {
+      setSubGenres([...subGenres, subGenre]);
+    }
+  };
 
   const AI_MODELS = [
     { value: 'gpt-5.2', label: 'GPT-5.2 (Latest, most capable)' },
@@ -137,6 +231,21 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
   }, []);
 
   const handleSave = async () => {
+    // Determine final genre and time period (use custom if "Other" selected)
+    const finalGenre = genre === 'Other' ? customGenre : genre;
+    const finalTimePeriod = timePeriod === 'Other' ? customTimePeriod : timePeriod;
+    
+    // Build book context settings
+    const newBookContext: BookContextSettings = {
+      genre: finalGenre,
+      subGenres,
+      targetDemographic,
+      timePeriod: finalTimePeriod,
+      year: year.trim() || undefined,
+      primaryLocation,
+      additionalContext,
+    };
+    
     // Save book metadata
     updateBookMetadata({
       title,
@@ -153,6 +262,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
         defaultFont: bodyFont,
         defaultFontSize: bodyFontSize,
         lineSpacing,
+        paragraphSpacing,
+        bookContext: newBookContext,
       },
     });
 
@@ -204,12 +315,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
         </div>
 
         {/* Tabs */}
-        <div style={{ 
+        <div className="dialog-tabs" style={{ 
           display: 'flex', 
           borderBottom: '1px solid var(--border-color)',
           padding: '0 20px',
         }}>
-          {(['general', 'fonts', 'page', 'api'] as const).map((tab) => (
+          {(['general', 'context', 'fonts', 'page', 'api'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -223,7 +334,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                 textTransform: 'capitalize',
               }}
             >
-              {tab === 'api' ? 'API Keys' : tab}
+              {tab === 'api' ? 'API Keys' : tab === 'context' ? 'Book Context' : tab}
             </button>
           ))}
         </div>
@@ -263,6 +374,35 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                   rows={4}
                   style={{ resize: 'vertical' }}
                 />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Content editor theme</label>
+                <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                  Choose how the chapter editing area (the page) looks. Light shows a white page; Dark shows a dark page to match the app.
+                </p>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="contentEditorTheme"
+                      value="light"
+                      checked={ui.contentEditorTheme === 'light'}
+                      onChange={() => setContentEditorTheme('light')}
+                    />
+                    <span>Light (white page)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="contentEditorTheme"
+                      value="dark"
+                      checked={ui.contentEditorTheme === 'dark'}
+                      onChange={() => setContentEditorTheme('dark')}
+                    />
+                    <span>Dark (dark page)</span>
+                  </label>
+                </div>
               </div>
 
               {/* Google Docs Source Info */}
@@ -350,6 +490,164 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                   </div>
                 </div>
               )}
+            </>
+          )}
+
+          {activeTab === 'context' && (
+            <>
+              <div style={{ 
+                padding: '12px 16px', 
+                background: 'var(--bg-input)', 
+                borderRadius: '8px',
+                marginBottom: '20px',
+                fontSize: '13px',
+                color: 'var(--text-secondary)'
+              }}>
+                These settings help the AI understand your book's context, ensuring variations and generated content match your genre, audience, and setting.
+              </div>
+
+              {/* Genre */}
+              <div className="form-group">
+                <label className="form-label">Genre</label>
+                <select
+                  className="form-input"
+                  value={GENRE_OPTIONS.includes(genre) ? genre : 'Other'}
+                  onChange={(e) => {
+                    setGenre(e.target.value);
+                    if (e.target.value !== 'Other') {
+                      setCustomGenre('');
+                    }
+                  }}
+                >
+                  <option value="">Select a genre...</option>
+                  {GENRE_OPTIONS.map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+                {(genre === 'Other' || (!GENRE_OPTIONS.includes(genre) && genre)) && (
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={customGenre || (GENRE_OPTIONS.includes(genre) ? '' : genre)}
+                    onChange={(e) => setCustomGenre(e.target.value)}
+                    placeholder="Enter custom genre..."
+                    style={{ marginTop: '8px' }}
+                  />
+                )}
+              </div>
+
+              {/* Sub-genres */}
+              <div className="form-group">
+                <label className="form-label">Sub-genres (optional)</label>
+                <div className="sub-genre-tags">
+                  {SUB_GENRE_OPTIONS.map((sg) => (
+                    <button
+                      key={sg}
+                      type="button"
+                      onClick={() => toggleSubGenre(sg)}
+                      className={`sub-genre-tag ${subGenres.includes(sg) ? 'selected' : ''}`}
+                    >
+                      {sg}
+                    </button>
+                  ))}
+                </div>
+                {subGenres.length > 0 && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                    Selected: {subGenres.join(', ')}
+                  </div>
+                )}
+              </div>
+
+              {/* Target Demographic */}
+              <div className="form-group">
+                <label className="form-label">Target Audience</label>
+                <select
+                  className="form-input"
+                  value={targetDemographic}
+                  onChange={(e) => setTargetDemographic(e.target.value)}
+                >
+                  <option value="">Select target audience...</option>
+                  {DEMOGRAPHIC_OPTIONS.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Time Period */}
+              <div className="form-group">
+                <label className="form-label">Time Period</label>
+                <select
+                  className="form-input"
+                  value={TIME_PERIOD_OPTIONS.includes(timePeriod) ? timePeriod : 'Other'}
+                  onChange={(e) => {
+                    setTimePeriod(e.target.value);
+                    if (e.target.value !== 'Other') {
+                      setCustomTimePeriod('');
+                    }
+                  }}
+                >
+                  <option value="">Select time period...</option>
+                  {TIME_PERIOD_OPTIONS.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+                {(timePeriod === 'Other' || (!TIME_PERIOD_OPTIONS.includes(timePeriod) && timePeriod)) && (
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={customTimePeriod || (TIME_PERIOD_OPTIONS.includes(timePeriod) ? '' : timePeriod)}
+                    onChange={(e) => setCustomTimePeriod(e.target.value)}
+                    placeholder="Enter custom time period..."
+                    style={{ marginTop: '8px' }}
+                  />
+                )}
+              </div>
+
+              {/* Year */}
+              <div className="form-group">
+                <label className="form-label">Year / Time Setting</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={year}
+                  onChange={(e) => setYear(e.target.value)}
+                  placeholder="e.g., 1985, 2023, 1776-1783, Spring 1985"
+                />
+                <p className="form-hint">
+                  Specific year or year range when the story takes place. This helps with timeline accuracy and historical context.
+                </p>
+              </div>
+
+              {/* Primary Location */}
+              <div className="form-group">
+                <label className="form-label">Primary Location / Setting</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={primaryLocation}
+                  onChange={(e) => setPrimaryLocation(e.target.value)}
+                  placeholder="e.g., Boston, Massachusetts or Rural England"
+                />
+                <p className="form-hint">
+                  Where does most of your story take place?
+                </p>
+              </div>
+
+              {/* Additional Context */}
+              <div className="form-group">
+                <label className="form-label">Additional Style Notes (optional)</label>
+                <textarea
+                  className="form-input"
+                  value={additionalContext}
+                  onChange={(e) => setAdditionalContext(e.target.value)}
+                  placeholder="e.g., Dark and atmospheric tone, unreliable narrator, multiple POV, Southern Gothic style..."
+                  rows={3}
+                  style={{ resize: 'vertical' }}
+                />
+                <p className="form-hint">
+                  Any additional notes about tone, style, themes, or special considerations for the AI.
+                </p>
+              </div>
             </>
           )}
 
@@ -551,6 +849,22 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                   <option value="1.5">1.5</option>
                   <option value="2">Double</option>
                 </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Paragraph Spacing (em)</label>
+                <input
+                  type="number"
+                  className="form-input"
+                  value={paragraphSpacing}
+                  onChange={(e) => setParagraphSpacing(parseFloat(e.target.value) || 0)}
+                  step="0.1"
+                  min="0"
+                  max="2"
+                />
+                <p className="form-hint">
+                  Space between paragraphs. 0 = no spacing (uses text indent), 0.5+ = spacing between paragraphs (no indent).
+                </p>
               </div>
             </>
           )}
