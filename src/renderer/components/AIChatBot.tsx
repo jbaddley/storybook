@@ -3,6 +3,7 @@ import { useBookStore } from '../stores/bookStore';
 import { openAIService, ChatMessage, ChatCommand, ToolCall } from '../services/openaiService';
 import { generateId, ChapterComment } from '../../shared/types';
 import { ChapterVariationDialog } from './ChapterVariationDialog';
+import { outlineContentToPlainText, markdownLikeToTipTapContent } from '../utils/outlineContent';
 
 // IndexedDB for chat persistence
 const CHAT_DB_NAME = 'storybook-chat';
@@ -166,6 +167,7 @@ interface AIChatBotProps {
 export const AIChatBot: React.FC<AIChatBotProps> = ({ pendingChatMessage, onConsumedPendingMessage, chatInputPreFill, onConsumedChatInputPreFill }) => {
   const {
     book,
+    ui,
     getActiveChapter,
     ai,
     updateChapter,
@@ -176,7 +178,11 @@ export const AIChatBot: React.FC<AIChatBotProps> = ({ pendingChatMessage, onCons
     updateSummary,
     setActiveChapter,
     addComment,
+    updateBookOutline,
+    createChaptersFromOutline,
   } = useBookStore();
+
+  const isOutlinerActive = ui.activeDocumentTabId === 'outliner-tab';
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>([]);
@@ -441,8 +447,19 @@ Do NOT say you don't have access - the text is included in this message.`);
 - Line Spacing: ${settings.lineSpacing}
 When making formatting changes, use these fonts and sizes.`);
 
-    // Current chapter context (the chapter user is viewing)
-    if (activeChapter) {
+    // When Outliner tab is active: current document is the book outline
+    if (isOutlinerActive) {
+      const outlineContent = outlineContentToPlainText(book.outline?.content);
+      parts.push(`## CURRENT DOCUMENT: Book Outline
+The user is working on their **book outline**. The full outline is below. Help them craft, expand, or generate outline content. Suggest structure, headings, bullet points, or full outline sections.
+
+--- OUTLINE CONTENT BELOW ---
+${outlineContent || '(Outline is empty. Help the user create one.)'}
+--- END OF OUTLINE ---`);
+    }
+
+    // Current chapter context (the chapter user is viewing) – when not on Outliner
+    if (!isOutlinerActive && activeChapter) {
       const chapterText = extractText(activeChapter.content);
       const chapterIndex = book.chapters.findIndex(c => c.id === activeChapter.id);
       parts.push(`## CURRENT CHAPTER (Chapter ${chapterIndex + 1}): "${activeChapter.title}"
@@ -482,6 +499,22 @@ ${chapterText}
       parts.push(`## Timeline Events:\n${book.extracted.timeline.slice(0, 10).map(t => 
         `- ${t.date ? `[${t.date}] ` : ''}${t.description}`
       ).join('\n')}${book.extracted.timeline.length > 10 ? `\n...and ${book.extracted.timeline.length - 10} more events` : ''}`);
+    }
+
+    // Songs reference
+    const songs = book.songs ?? [];
+    if (songs.length > 0) {
+      parts.push(`## Songs:\n${songs.map(s => {
+        const chars = s.characters?.length ? ` Characters: ${s.characters.join(', ')}` : '';
+        const inst = s.instruments?.length ? ` Instruments: ${s.instruments.join(', ')}` : '';
+        const style = s.style ? ` Style: ${s.style}` : '';
+        const genre = s.genre ? ` Genre: ${s.genre}` : '';
+        const tempo = s.tempo ? ` Tempo: ${s.tempo}` : '';
+        const key = s.key ? ` Key: ${s.key}` : '';
+        const desc = s.description ? ` ${s.description}` : '';
+        const lyricsBlock = s.lyrics ? `\n  Lyrics:\n${s.lyrics.split('\n').map(l => `  ${l}`).join('\n')}` : '';
+        return `- **${s.title}**:${desc}${style}${genre}${chars}${tempo}${key}${inst}${lyricsBlock}`;
+      }).join('\n')}`);
     }
 
     // Summaries reference
@@ -566,12 +599,25 @@ ${themesData.symbols.length > 0 ? `\n**Symbols:**\n${symbolsList}` : ''}`);
       `- Chapter ${i + 1} "${c.title}": ID = "${c.id}"`
     ).join('\n');
     
-    return `You are a writing assistant helping with a book manuscript.
+    const outlinerIntro = isOutlinerActive
+      ? `## CURRENT FOCUS: Book Outline
+The user is working on their **book outline** (see "## CURRENT DOCUMENT: Book Outline" below). Help them craft, structure, expand, or generate the outline. When they ask you to apply changes, update the outline, or replace it, use the **update_outline** tool with the full new outline content (use # for H1, ## for H2, ### for H3, - for bullets). You can also suggest outline text in your response for them to add manually.
 
-## CRITICAL - READ THIS FIRST:
+When the user asks to **create chapters from the outline** (e.g. "create chapters based on the current outline", "scaffold the book from the outline", or "write a short description for each chapter that summarizes main focus, themes, character development and plot points"), use the **create_chapters_from_outline** tool. Parse the outline into one chapter per major section (or as appropriate), and for each chapter provide a **title** and a **description**: a short summary covering that chapter's main focus, themes, character development, and plot points. Chapters are appended to the book and each description is stored as the chapter summary.
+
+`
+      : '';
+
+    const chapterCritical = isOutlinerActive
+      ? ''
+      : `## CRITICAL - READ THIS FIRST:
 The FULL TEXT of any chapters the user mentioned is ALREADY INCLUDED in this conversation below. 
 DO NOT say "I don't have access to" or "please provide" - the chapter text is RIGHT HERE.
 Look for sections marked "## REQUESTED CHAPTER" or "## CURRENT CHAPTER" below - those contain the complete chapter text.
+`;
+    
+    return `You are a writing assistant helping with a book manuscript.
+${outlinerIntro}${chapterCritical}
 
 ## IMPORTANT: Know When to Analyze vs When to Edit
 
@@ -1082,6 +1128,43 @@ Use markdown formatting for readability in your responses.`;
         console.log(`[ChatBot] Arguments:`, JSON.stringify(args, null, 2));
         
         switch (toolCall.function.name) {
+          case 'update_outline':
+            if (args.content != null && typeof args.content === 'string') {
+              try {
+                const doc = markdownLikeToTipTapContent(args.content.trim());
+                updateBookOutline(JSON.stringify(doc));
+                successCount++;
+                changes.push(`✓ Updated book outline${args.explanation ? `: ${args.explanation}` : ''}`);
+                console.log('[ChatBot] ✓ Updated outline via update_outline tool');
+              } catch (err) {
+                console.error('[ChatBot] update_outline failed:', err);
+                changes.push('✗ Failed to update outline');
+              }
+            }
+            break;
+          case 'create_chapters_from_outline':
+            if (args.chapters && Array.isArray(args.chapters) && args.chapters.length > 0) {
+              try {
+                const items = args.chapters
+                  .filter((c: any) => c && typeof c.title === 'string' && typeof c.description === 'string')
+                  .map((c: any) => ({ title: String(c.title).trim(), description: String(c.description).trim() }))
+                  .filter((c: { title: string; description: string }) => c.title.length > 0);
+                if (items.length > 0) {
+                  createChaptersFromOutline(items);
+                  successCount++;
+                  changes.push(`✓ Created ${items.length} chapter${items.length !== 1 ? 's' : ''} from outline${args.explanation ? `: ${args.explanation}` : ''}`);
+                  console.log('[ChatBot] ✓ Created chapters from outline:', items.length);
+                } else {
+                  changes.push('✗ create_chapters_from_outline: no valid chapters (need title and description per item)');
+                }
+              } catch (err) {
+                console.error('[ChatBot] create_chapters_from_outline failed:', err);
+                changes.push('✗ Failed to create chapters from outline');
+              }
+            } else {
+              changes.push('✗ create_chapters_from_outline: chapters array required and must not be empty');
+            }
+            break;
           case 'replace_text':
             if (args.chapter_id && args.find_text && args.replace_with !== undefined) {
               // Track this attempt
@@ -1801,6 +1884,11 @@ Use markdown formatting for readability in your responses.`;
             <BotIcon />
             <p>Ask me anything about your book!</p>
             <div className="chatbot-suggestions">
+              {isOutlinerActive ? (
+                <button onClick={() => setInput('Please create chapters based on the current outline and write a short description in each chapter that summarizes the chapter\'s main focus, themes, character development and plot points.')}>
+                  Create chapters from outline
+                </button>
+              ) : null}
               <button onClick={() => setInput('Review my current chapter and suggest improvements')}>
                 Review & improve chapter
               </button>

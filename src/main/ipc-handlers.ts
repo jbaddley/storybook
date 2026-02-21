@@ -1245,6 +1245,26 @@ export function setupIpcHandlers(): void {
     }
   });
 
+  // Database: Get book outline (returns null if table not migrated or error)
+  ipcMain.handle('db:get-book-outline', async (_event, bookId: string) => {
+    try {
+      return await db.getBookOutline(bookId);
+    } catch (error) {
+      console.error('[DB] Error getting book outline:', error);
+      return null;
+    }
+  });
+
+  // Database: Upsert book outline (no-op if table not migrated)
+  ipcMain.handle('db:upsert-book-outline', async (_event, bookId: string, content: string) => {
+    try {
+      return await db.upsertBookOutline(bookId, content);
+    } catch (error) {
+      console.error('[DB] Error upserting book outline:', error);
+      return null;
+    }
+  });
+
   // Database: Get book's updatedAt timestamp
   ipcMain.handle('db:get-book-updated-at', async (_event, bookId: string) => {
     try {
@@ -1298,6 +1318,16 @@ export function setupIpcHandlers(): void {
     }
   });
 
+  // Database: Get revision passes and completions for a book (e.g. after loading from file)
+  ipcMain.handle('db:get-revision-data-for-book', async (_event, bookId: string) => {
+    try {
+      return await db.getRevisionDataForBook(bookId);
+    } catch (error) {
+      console.error('[DB] Error getting revision data for book:', error);
+      throw error;
+    }
+  });
+
   // Database: Detect chapter conflicts
   ipcMain.handle('db:detect-chapter-conflicts', async (_event, params: {
     bookId: string;
@@ -1337,6 +1367,39 @@ export function setupIpcHandlers(): void {
       await db.deleteChapterVariation(variationId);
     } catch (error) {
       console.error('[DB] Error deleting chapter variation:', error);
+      throw error;
+    }
+  });
+
+  // Database: Create revision pass
+  ipcMain.handle('db:create-revision-pass', async (_event, params: { bookId: string; title: string; date: string }) => {
+    try {
+      return await db.createRevisionPass(params.bookId, {
+        title: params.title,
+        date: new Date(params.date),
+      });
+    } catch (error) {
+      console.error('[DB] Error creating revision pass:', error);
+      throw error;
+    }
+  });
+
+  // Database: Set chapter completed for revision
+  ipcMain.handle('db:set-chapter-completed-for-revision', async (_event, params: { chapterId: string; revisionId: string }) => {
+    try {
+      await db.setChapterCompletedForRevision(params.chapterId, params.revisionId);
+    } catch (error) {
+      console.error('[DB] Error setting chapter completed for revision:', error);
+      throw error;
+    }
+  });
+
+  // Database: Unset chapter completed for revision
+  ipcMain.handle('db:unset-chapter-completed-for-revision', async (_event, params: { chapterId: string; revisionId: string }) => {
+    try {
+      await db.unsetChapterCompletedForRevision(params.chapterId, params.revisionId);
+    } catch (error) {
+      console.error('[DB] Error unsetting chapter completed for revision:', error);
       throw error;
     }
   });

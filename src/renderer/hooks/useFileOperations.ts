@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { fileService } from '../services/fileService';
+import { databaseService } from '../services/databaseService';
 import { exportService } from '../services/exportService';
 
 // Check if running in Electron
@@ -122,8 +123,11 @@ export function useFileOperations() {
         
         const loadedBook = await fileService.loadBook(result.data);
         console.log('[FileOps] Loaded book:', loadedBook.title, 'with', loadedBook.chapters.length, 'chapters');
-        
-        setBook(loadedBook);
+        const revisionData = await databaseService.getRevisionDataForBook(loadedBook.id);
+        const bookToSet = revisionData
+          ? { ...loadedBook, revisionPasses: revisionData.revisionPasses, chapterRevisionCompletions: revisionData.chapterRevisionCompletions }
+          : loadedBook;
+        setBook(bookToSet);
         setCurrentFilePath(result.filePath);
         
         // Remember this file as the last opened
@@ -146,7 +150,11 @@ export function useFileOperations() {
       if (data) {
         console.log('[FileOps] File data length:', data.length);
         const loadedBook = await fileService.loadBook(data);
-        setBook(loadedBook);
+        const revisionData = await databaseService.getRevisionDataForBook(loadedBook.id);
+        const bookToSet = revisionData
+          ? { ...loadedBook, revisionPasses: revisionData.revisionPasses, chapterRevisionCompletions: revisionData.chapterRevisionCompletions }
+          : loadedBook;
+        setBook(bookToSet);
         setCurrentFilePath(filePath);
         console.log('[FileOps] Opened file:', filePath, 'with', loadedBook.chapters.length, 'chapters');
         return true;

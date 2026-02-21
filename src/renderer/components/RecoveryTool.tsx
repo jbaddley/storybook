@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { fileService } from '../services/fileService';
+import { databaseService } from '../services/databaseService';
 
 interface BackupInfo {
   path: string;
@@ -79,9 +80,13 @@ export const RecoveryTool: React.FC<RecoveryToolProps> = ({ onClose }) => {
       // Restore the backup (returns the file data)
       const restoredData = await window.electronAPI.restoreBackup(backup.path, currentFilePath);
       
-      // Load the restored data into the app
+      // Load the restored data into the app (merge revision data from DB if available)
       const loadedBook = await fileService.loadBook(restoredData);
-      setBook(loadedBook);
+      const revisionData = await databaseService.getRevisionDataForBook(loadedBook.id);
+      const bookToSet = revisionData
+        ? { ...loadedBook, revisionPasses: revisionData.revisionPasses, chapterRevisionCompletions: revisionData.chapterRevisionCompletions }
+        : loadedBook;
+      setBook(bookToSet);
       setDirty(false);
       
       setRestored(true);

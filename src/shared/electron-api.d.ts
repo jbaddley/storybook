@@ -100,6 +100,7 @@ export interface ElectronAPI {
   // Menu event listeners
   onMenuNew: (callback: () => void) => () => void;
   onMenuOpen: (callback: () => void) => () => void;
+  onMenuOpenFromCloud: (callback: () => void) => () => void;
   onMenuSave: (callback: () => void) => () => void;
   onMenuSaveAs: (callback: () => void) => () => void;
   onMenuExportDocx: (callback: () => void) => () => void;
@@ -150,9 +151,15 @@ export interface ElectronAPI {
   dbGetChapterTimestamps: (bookId: string) => Promise<Record<string, string>>;
   dbGetPlotErrorAnalysis: (bookId: string) => Promise<unknown>;
   dbDeleteStoryCraftFeedback: (chapterId: string) => Promise<boolean>;
+  dbGetBookOutline: (bookId: string) => Promise<{ id: string; bookId: string; content: string; updatedAt: string } | null>;
+  dbUpsertBookOutline: (bookId: string, content: string) => Promise<{ id: string; bookId: string; content: string; updatedAt: string }>;
   dbSyncBookToDatabase: (params: { userId: string; book: unknown }) => Promise<unknown>;
   dbLoadBookFromDatabase: (bookId: string) => Promise<unknown>;
+  dbGetRevisionDataForBook: (bookId: string) => Promise<{ revisionPasses: unknown[]; chapterRevisionCompletions: unknown[] }>;
   dbDetectChapterConflicts: (params: { bookId: string; localChapters: unknown[] }) => Promise<ChapterConflict[]>;
+  dbCreateRevisionPass: (params: { bookId: string; title: string; date: string }) => Promise<unknown>;
+  dbSetChapterCompletedForRevision: (params: { chapterId: string; revisionId: string }) => Promise<void>;
+  dbUnsetChapterCompletedForRevision: (params: { chapterId: string; revisionId: string }) => Promise<void>;
 }
 
 declare global {

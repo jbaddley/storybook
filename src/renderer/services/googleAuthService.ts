@@ -290,6 +290,35 @@ class GoogleAuthService {
   }
 
   /**
+   * Ensure we have a database user ID for sync (e.g. after session restore when DB was unavailable).
+   * If signed in with Google but dbUser is not set, calls findOrCreateUserByGoogle and sets dbSyncService.
+   * Returns the DB user id or null if not signed in or DB unavailable.
+   */
+  async ensureDbUserId(): Promise<string | null> {
+    if (this.dbUser) {
+      dbSyncService.setCurrentUserId(this.dbUser.id);
+      return this.dbUser.id;
+    }
+    if (!this.isAuthenticated() || !this.userInfo) return null;
+    try {
+      const user = await databaseService.findOrCreateUserByGoogle(
+        this.userInfo.id,
+        this.userInfo.email,
+        this.userInfo.name,
+        this.userInfo.picture
+      );
+      if (user) {
+        this.dbUser = user;
+        dbSyncService.setCurrentUserId(user.id);
+        return user.id;
+      }
+    } catch (error) {
+      console.warn('[GoogleAuth] ensureDbUserId failed:', error);
+    }
+    return null;
+  }
+
+  /**
    * Register or update user in database after OAuth
    * Should be called after successful token exchange
    */

@@ -36,6 +36,16 @@
   font-weight: bold;
 }
 
+.titlebar-book-id {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: var(--text-muted);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Main content */
 .main-content {
   display: flex;
@@ -556,6 +566,15 @@
   text-align: center;
 }
 
+/* Revision pass done toggle: clickable in both states (— and ✓) */
+.chapter-revision-done-btn:hover,
+.chapter-revision-done-btn:focus-visible {
+  color: var(--text-primary);
+  outline: 1px solid var(--border);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
 .chapter-item-edit-input {
   flex: 1;
   min-width: 0;
@@ -662,6 +681,17 @@
   letter-spacing: 0.5px;
   color: var(--text-muted);
   margin-bottom: 8px;
+}
+
+.ai-action-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ai-action-row .ai-btn {
+  flex: 1;
+  margin-bottom: 0;
 }
 
 .ai-btn {
@@ -831,6 +861,35 @@
   justify-content: flex-end;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* Open from cloud dialog */
+.open-from-cloud-dialog .open-from-cloud-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.open-from-cloud-dialog .open-from-cloud-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  cursor: pointer;
+  font-size: 14px;
+}
+.open-from-cloud-dialog .open-from-cloud-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.open-from-cloud-dialog .open-from-cloud-meta {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.open-from-cloud-dialog .open-from-cloud-error {
+  color: var(--error-color, #c00);
 }
 
 /* Form elements */
@@ -1405,6 +1464,92 @@
 
 .custom-tab-editor:focus {
   outline: none;
+}
+
+/* Outliner: WYSIWYG single-pane */
+.outliner-view .outliner-content.outliner-wysiwyg {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.outliner-view .outliner-header {
+  flex-shrink: 0;
+}
+
+.outliner-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.outliner-toolbar button {
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.outliner-toolbar button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+.outliner-toolbar button.active {
+  background: rgba(var(--accent-rgb, 136, 58, 234), 0.15);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.outliner-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-color);
+  margin: 0 4px;
+}
+
+.outliner-view .ProseMirror {
+  flex: 1;
+  min-height: 200px;
+  padding: 14px 18px;
+  font-size: 14px;
+  line-height: 1.6;
+  /* Use page text color so outline is readable on white tab-viewer background */
+  color: var(--text-on-page);
+  background: var(--bg-page);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  outline: none;
+}
+
+.outliner-view .ProseMirror:focus {
+  border-color: var(--accent-primary);
+}
+
+.outliner-view .ProseMirror p { margin: 0.4em 0; }
+.outliner-view .ProseMirror h1 { font-size: 1.5em; margin: 0.75em 0 0.4em; font-weight: 700; }
+.outliner-view .ProseMirror h2 { font-size: 1.25em; margin: 0.6em 0 0.35em; font-weight: 600; }
+.outliner-view .ProseMirror h3 { font-size: 1.1em; margin: 0.5em 0 0.25em; font-weight: 600; }
+.outliner-view .ProseMirror ul { padding-left: 1.5em; margin: 0.4em 0; list-style-type: disc; }
+.outliner-view .ProseMirror ol { padding-left: 1.5em; margin: 0.4em 0; list-style-type: decimal; }
+.outliner-view .ProseMirror li { margin: 0.2em 0; }
+.outliner-view .ProseMirror p.is-editor-empty:first-child::before {
+  color: var(--text-on-page-muted);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
 }
 
 /* Character Document Styles */
@@ -3004,6 +3149,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.storycraft-chapter-number {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 2.5em;
+  flex-shrink: 0;
 }
 
 .storycraft-chapter-title {

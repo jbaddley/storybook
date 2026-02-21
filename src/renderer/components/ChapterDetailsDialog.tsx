@@ -5,6 +5,8 @@ import {
 } from '../../shared/types';
 import { openAIService } from '../services/openaiService';
 import { useOpenAI } from '../hooks/useOpenAI';
+import { useBookStore } from '../stores/bookStore';
+import { getLatestRevisionPassForChapter, isChapterDoneForRevision } from '../utils/revisionUtils';
 
 const CloseIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
@@ -27,7 +29,15 @@ export interface ChapterDetailsDialogProps {
   chapterText: string;
   storyCraftSummary?: string;
   onSave: (updates: { title?: string; purpose?: string }) => void;
+  /** When set, shows revision pass status and "Mark done for current pass" */
+  chapterId?: string;
 }
+
+const CheckIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+    <polyline points="20,6 9,17 4,12" />
+  </svg>
+);
 
 export const ChapterDetailsDialog: React.FC<ChapterDetailsDialogProps> = ({
   isOpen,
@@ -37,8 +47,24 @@ export const ChapterDetailsDialog: React.FC<ChapterDetailsDialogProps> = ({
   chapterText,
   storyCraftSummary,
   onSave,
+  chapterId,
 }) => {
   const { isConfigured } = useOpenAI();
+  const {
+    book,
+    currentRevisionPassId,
+    markChapterDoneForRevision,
+    unmarkChapterDoneForRevision,
+  } = useBookStore();
+  const revisionPasses = book.revisionPasses ?? [];
+  const chapterRevisionCompletions = book.chapterRevisionCompletions ?? [];
+  const latestPass = chapterId
+    ? getLatestRevisionPassForChapter(chapterId, revisionPasses, chapterRevisionCompletions)
+    : null;
+  const isDoneForCurrent =
+    chapterId &&
+    currentRevisionPassId &&
+    isChapterDoneForRevision(chapterId, currentRevisionPassId, chapterRevisionCompletions);
   const [title, setTitle] = useState(chapterTitle);
   const [selectedPurpose, setSelectedPurpose] = useState<string>(currentPurpose ?? '');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -149,6 +175,52 @@ export const ChapterDetailsDialog: React.FC<ChapterDetailsDialogProps> = ({
             <p className="chapter-details-error" role="alert">
               {generateError}
             </p>
+          )}
+
+          {chapterId && (
+            <div className="chapter-details-revision" style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+              <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>
+                Revision pass
+              </label>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                Latest pass completed: {latestPass ? `Pass ${latestPass.revisionNumber} – ${latestPass.title}` : '—'}
+              </p>
+              {currentRevisionPassId && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isDoneForCurrent)
+                        unmarkChapterDoneForRevision(chapterId, currentRevisionPassId);
+                      else
+                        markChapterDoneForRevision(chapterId, currentRevisionPassId);
+                    }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 20,
+                      height: 20,
+                      padding: 0,
+                      border: isDoneForCurrent ? 'none' : '1px solid var(--border)',
+                      borderRadius: 2,
+                      background: isDoneForCurrent ? 'var(--accent-primary)' : 'transparent',
+                      color: isDoneForCurrent ? 'var(--text-on-accent)' : 'transparent',
+                      cursor: 'pointer',
+                    }}
+                    title={isDoneForCurrent ? 'Unmark as done for this pass' : 'Mark as done for current pass'}
+                  >
+                    {isDoneForCurrent ? <CheckIcon /> : null}
+                  </button>
+                  <span>{isDoneForCurrent ? 'Done for current pass' : 'Mark done for current pass'}</span>
+                </label>
+              )}
+              {!currentRevisionPassId && (
+                <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Select a revision pass in the chapter list to mark this chapter done.
+                </p>
+              )}
+            </div>
           )}
 
           <label className="form-label" style={{ display: 'block', marginTop: '16px', marginBottom: '6px' }}>

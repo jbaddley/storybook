@@ -292,6 +292,62 @@ class OpenAIService {
             required: ['chapter_id', 'target_text', 'comment_text', 'comment_type']
           }
         }
+      },
+      {
+        type: 'function' as const,
+        function: {
+          name: 'update_outline',
+          description: 'Replace the entire book outline with new content. Use ONLY when the user is working on the Outliner (book outline) and asks you to apply changes, rewrite, or update the outline. Content should use headings (# H1, ## H2, ### H3), bullet points (- item), and plain paragraphs.',
+          parameters: {
+            type: 'object',
+            properties: {
+              content: {
+                type: 'string',
+                description: 'The full new outline content in markdown-style: # for H1, ## for H2, ### for H3, - for bullet list items, plain text for paragraphs. Use newlines between sections.'
+              },
+              explanation: {
+                type: 'string',
+                description: 'Brief explanation of what you changed'
+              }
+            },
+            required: ['content']
+          }
+        }
+      },
+      {
+        type: 'function' as const,
+        function: {
+          name: 'create_chapters_from_outline',
+          description: 'Create book chapters from the current outline. Use when the user asks to create chapters based on the outline, scaffold the book from the outline, or add chapters with short descriptions (e.g. main focus, themes, character development, plot points). Each chapter is created with a title and a description that becomes its summary.',
+          parameters: {
+            type: 'object',
+            properties: {
+              chapters: {
+                type: 'array',
+                description: 'One entry per chapter to create, in order',
+                items: {
+                  type: 'object',
+                  properties: {
+                    title: {
+                      type: 'string',
+                      description: 'Chapter title (e.g. from outline heading or section)'
+                    },
+                    description: {
+                      type: 'string',
+                      description: 'Short description summarizing the chapter\'s main focus, themes, character development, and plot points'
+                    }
+                  },
+                  required: ['title', 'description']
+                }
+              },
+              explanation: {
+                type: 'string',
+                description: 'Brief explanation of how you derived chapters from the outline'
+              }
+            },
+            required: ['chapters']
+          }
+        }
       }
     ];
   }
@@ -641,6 +697,10 @@ Keep your response under 300 words.`;
       bookSettings?: BookContextSettings;
       /** Author-indicated chapter purpose (e.g. climax, setup) for assessing whether chapter fulfills it */
       chapterPurpose?: string;
+      /** Book outline (Markdown) – intended structure; assess alignment */
+      bookOutline?: string;
+      /** Songs (title, description, style, genre, characters, tempo, key, instruments) – reference for consistency */
+      songs?: string;
     }
   ): Promise<{
     assessment: {
@@ -706,8 +766,16 @@ The following promises, questions, setups, or tensions were introduced in earlie
 ${bookContext.previousPromises.map(p => `- [ID: ${p.id}] (${p.type} from "${p.chapterTitle}"): ${p.description}`).join('\n')}`;
     }
 
+    const bookOutlineInfo = bookContext?.bookOutline
+      ? `\n\n**BOOK OUTLINE (intended structure – assess alignment):**\n${bookContext.bookOutline}`
+      : '';
+
+    const songsInfo = bookContext?.songs
+      ? `\n\n**[REFERENCE] Songs in this book (for consistency when relevant):**\n${bookContext.songs}`
+      : '';
+
     const systemPrompt = `You are a professional story craft analyst and developmental editor. Assess this chapter comprehensively.
-${bookSettingsInfo}
+${bookSettingsInfo}${bookOutlineInfo}${songsInfo}
 
 **SCORING (1-5 scale):**
 1 = Poor/Missing, 2 = Needs significant work, 3 = Adequate but could improve, 4 = Good, 5 = Excellent
@@ -1031,6 +1099,10 @@ Respond in JSON format:
       /** Previous chapters’ Story Craft summary + promises (optional) */
       storyCraftArc?: string;
       chapterPurpose?: string;
+      /** Book outline (Markdown) – align with this structure */
+      bookOutline?: string;
+      /** Songs (title, description, style, genre, characters, tempo, key, instruments) – for consistency */
+      songs?: string;
     },
     settings: VariationSettings = DEFAULT_VARIATION_SETTINGS
   ): Promise<{ text: string; changeReport: ChangeReport }> {
@@ -1071,6 +1143,9 @@ Respond in JSON format:
       if (bookContext.chapterPurpose) {
         contextInfo += `\n\n**[REFERENCE] This chapter's purpose (align your revision with this):** ${bookContext.chapterPurpose}`;
       }
+      if (bookContext.bookOutline) {
+        contextInfo += `\n\n**[REFERENCE] Book outline (align with this structure):**\n${bookContext.bookOutline}`;
+      }
       if (bookContext.characters) {
         contextInfo += `\n\n**[REFERENCE] Characters (for consistency):**\n${bookContext.characters}`;
       }
@@ -1079,6 +1154,9 @@ Respond in JSON format:
       }
       if (bookContext.themes) {
         contextInfo += `\n\n**[REFERENCE] Themes (reinforce these where they already appear):**\n${bookContext.themes}`;
+      }
+      if (bookContext.songs) {
+        contextInfo += `\n\n**[REFERENCE] Songs:**\n${bookContext.songs}`;
       }
       if (bookContext.previousChaptersSummary) {
         contextInfo += `\n\n**[REFERENCE] Previous chapters (do NOT add references to events not in original):**\n${bookContext.previousChaptersSummary}`;

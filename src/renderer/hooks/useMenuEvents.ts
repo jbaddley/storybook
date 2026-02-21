@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 interface MenuEventHandlers {
   onNew?: () => void;
   onOpen?: () => void;
+  onOpenFromCloud?: () => void;
   onSave?: () => void;
   onSaveAs?: () => void;
   onExportDocx?: () => void;
@@ -34,6 +35,9 @@ export function useMenuEvents(handlers: MenuEventHandlers) {
       }
       if (handlers.onOpen) {
         cleanups.push(window.electronAPI.onMenuOpen(handlers.onOpen));
+      }
+      if (handlers.onOpenFromCloud && window.electronAPI.onMenuOpenFromCloud) {
+        cleanups.push(window.electronAPI.onMenuOpenFromCloud(handlers.onOpenFromCloud));
       }
       if (handlers.onSave) {
         cleanups.push(window.electronAPI.onMenuSave(handlers.onSave));

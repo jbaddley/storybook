@@ -6,12 +6,14 @@
 import { PrismaClient, Prisma } from '@prisma/client';
 import {
   Book,
+  BookOutline,
   Chapter,
   ChapterComment,
   ChapterVariation,
   DocumentTab,
   Character,
   Location,
+  Song,
   TimelineEvent,
   ChapterSummary,
   StoryCraftChapterFeedback,
@@ -29,6 +31,8 @@ import {
   PlotErrorSeverity,
   TipTapContent,
   DEFAULT_TIPTAP_CONTENT,
+  RevisionPass,
+  ChapterRevisionCompletion,
 } from '../shared/types';
 
 // Helper to convert to Prisma JSON type
@@ -148,6 +152,16 @@ export interface DbBookWithRelations {
   motifs: any[];
   symbols: any[];
   plotErrorAnalysis?: any | null;
+  outline?: { id: string; bookId: string; content: string; updatedAt: Date } | null;
+  songs?: any[];
+  revisionPasses?: Array<{
+    id: string;
+    bookId: string;
+    revisionNumber: number;
+    title: string;
+    date: Date;
+    completions: Array<{ id: string; chapterId: string; revisionId: string; completedAt: Date | null }>;
+  }>;
 }
 
 export async function createBook(
@@ -213,6 +227,35 @@ export async function createBook(
 
   // Create extracted data
   await saveExtractedData(dbBook.id, book.extracted);
+
+  // Create book outline if present – skip if table not yet migrated
+  if (book.outline && book.outline.content) {
+    try {
+      await upsertBookOutline(dbBook.id, book.outline.content);
+    } catch {
+      // book_outlines table may not exist yet
+    }
+  }
+
+  // Create songs
+  const songs = book.songs ?? [];
+  if (songs.length > 0) {
+    await db.song.createMany({
+      data: songs.map(s => ({
+        id: s.id,
+        bookId: dbBook.id,
+        title: s.title,
+        description: s.description ?? null,
+        lyrics: s.lyrics ?? null,
+        style: s.style ?? '',
+        genre: s.genre ?? '',
+        characters: toJson(s.characters ?? []),
+        tempo: s.tempo ?? '',
+        key: s.key ?? '',
+        instruments: toJson(s.instruments ?? []),
+      })),
+    });
+  }
 
   return dbBook.id;
 }
@@ -290,6 +333,12 @@ export async function getBookById(bookId: string): Promise<DbBookWithRelations |
           errors: true,
         },
       },
+      revisionPasses: {
+        orderBy: { revisionNumber: 'asc' },
+        include: { completions: true },
+      },
+      songs: true,
+      // Outline loaded separately in loadBookFromDatabase so app works if migration not yet run
     },
   });
 }
@@ -580,6 +629,42 @@ export async function upsertDocumentTab(bookId: string, tab: DocumentTab): Promi
 export async function deleteDocumentTab(tabId: string): Promise<void> {
   const db = getDatabase();
   await db.documentTab.delete({ where: { id: tabId } });
+}
+
+// ============================================
+// Book Outline Operations
+// ============================================
+
+export async function getBookOutline(bookId: string): Promise<BookOutline | null> {
+  const db = getDatabase();
+  const row = await db.bookOutline.findUnique({
+    where: { bookId },
+  });
+  if (!row) return null;
+  return {
+    id: row.id,
+    bookId: row.bookId,
+    content: row.content,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+export async function upsertBookOutline(bookId: string, content: string): Promise<BookOutline> {
+  const db = getDatabase();
+  const row = await db.bookOutline.upsert({
+    where: { bookId },
+    update: { content, updatedAt: new Date() },
+    create: {
+      bookId,
+      content,
+    },
+  });
+  return {
+    id: row.id,
+    bookId: row.bookId,
+    content: row.content,
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 // ============================================
@@ -876,6 +961,36 @@ export async function syncBookToDatabase(userId: string, book: Book): Promise<vo
       await upsertDocumentTab(book.id, tab);
     }
     
+    // Upsert book outline (Markdown) – skip if table not yet migrated
+    if (book.outline) {
+      try {
+        await upsertBookOutline(book.id, book.outline.content);
+      } catch {
+        // book_outlines table may not exist yet
+      }
+    }
+
+    // Sync songs (replace all)
+    await db.song.deleteMany({ where: { bookId: book.id } });
+    const songs = book.songs ?? [];
+    if (songs.length > 0) {
+      await db.song.createMany({
+        data: songs.map(s => ({
+          id: s.id,
+          bookId: book.id,
+          title: s.title,
+          description: s.description ?? null,
+          lyrics: s.lyrics ?? null,
+          style: s.style ?? '',
+          genre: s.genre ?? '',
+          characters: toJson(s.characters ?? []),
+          tempo: s.tempo ?? '',
+          key: s.key ?? '',
+          instruments: toJson(s.instruments ?? []),
+        })),
+      });
+    }
+    
     // Sync extracted data
     await syncExtractedData(book.id, book.extracted);
   } else {
@@ -957,6 +1072,19 @@ export async function dbBookToAppBook(dbBook: DbBookWithRelations): Promise<Book
     description: loc.description || undefined,
     type: loc.type || undefined,
     mentions: loc.mentions as any[],
+  }));
+
+  const songs: Song[] = (dbBook.songs ?? []).map(s => ({
+    id: s.id,
+    title: s.title,
+    description: s.description ?? undefined,
+    lyrics: s.lyrics ?? undefined,
+    style: s.style ?? '',
+    genre: s.genre ?? '',
+    characters: (s.characters as string[]) ?? [],
+    tempo: s.tempo ?? '',
+    key: s.key ?? '',
+    instruments: (s.instruments as string[]) ?? [],
   }));
 
   const timeline: TimelineEvent[] = dbBook.timelineEvents.map(event => ({
@@ -1043,6 +1171,32 @@ export async function dbBookToAppBook(dbBook: DbBookWithRelations): Promise<Book
     console.log('[dbBookToAppBook] No plot error analysis found for book:', dbBook.id);
   }
 
+  // Map revision passes and flat list of completions
+  const revisionPasses: RevisionPass[] = (dbBook.revisionPasses || []).map((rp: any) => ({
+    id: rp.id,
+    bookId: rp.bookId,
+    revisionNumber: rp.revisionNumber,
+    title: rp.title,
+    date: rp.date.toISOString(),
+  }));
+  const chapterRevisionCompletions: ChapterRevisionCompletion[] = (dbBook.revisionPasses || []).flatMap(
+    (rp: any) => (rp.completions || []).map((c: any) => ({
+      id: c.id,
+      chapterId: c.chapterId,
+      revisionId: c.revisionId,
+      completedAt: c.completedAt?.toISOString(),
+    }))
+  );
+
+  const outline: BookOutline | null = dbBook.outline
+    ? {
+        id: dbBook.outline.id,
+        bookId: dbBook.outline.bookId,
+        content: dbBook.outline.content,
+        updatedAt: dbBook.outline.updatedAt.toISOString(),
+      }
+    : null;
+
   return {
     id: dbBook.id,
     title: dbBook.title,
@@ -1050,8 +1204,12 @@ export async function dbBookToAppBook(dbBook: DbBookWithRelations): Promise<Book
     description: dbBook.description,
     chapters,
     documentTabs,
+    outline,
     metadata: dbBook.metadata,
     settings: dbBook.settings,
+    revisionPasses,
+    chapterRevisionCompletions,
+    songs,
     extracted: {
       characters,
       locations,
@@ -1258,6 +1416,76 @@ export async function bookExists(bookId: string): Promise<boolean> {
   return book !== null;
 }
 
+// ============================================
+// Revision Pass Operations
+// ============================================
+
+export async function createRevisionPass(
+  bookId: string,
+  params: { title: string; date: Date }
+): Promise<RevisionPass> {
+  const db = getDatabase();
+  const book = await db.book.findUnique({
+    where: { id: bookId },
+    select: { id: true },
+  });
+  if (!book) {
+    throw new Error('BOOK_NOT_FOUND');
+  }
+  const existing = await db.revisionPass.findMany({
+    where: { bookId },
+    select: { revisionNumber: true },
+    orderBy: { revisionNumber: 'desc' },
+    take: 1,
+  });
+  const revisionNumber = existing.length > 0 ? existing[0].revisionNumber + 1 : 1;
+  const created = await db.revisionPass.create({
+    data: {
+      bookId,
+      revisionNumber,
+      title: params.title,
+      date: params.date,
+    },
+  });
+  return {
+    id: created.id,
+    bookId: created.bookId,
+    revisionNumber: created.revisionNumber,
+    title: created.title,
+    date: created.date.toISOString(),
+  };
+}
+
+export async function setChapterCompletedForRevision(
+  chapterId: string,
+  revisionId: string
+): Promise<void> {
+  const db = getDatabase();
+  await db.chapterRevisionCompletion.upsert({
+    where: {
+      chapterId_revisionId: { chapterId, revisionId },
+    },
+    create: {
+      chapterId,
+      revisionId,
+      completedAt: new Date(),
+    },
+    update: {
+      completedAt: new Date(),
+    },
+  });
+}
+
+export async function unsetChapterCompletedForRevision(
+  chapterId: string,
+  revisionId: string
+): Promise<void> {
+  const db = getDatabase();
+  await db.chapterRevisionCompletion.deleteMany({
+    where: { chapterId, revisionId },
+  });
+}
+
 /**
  * Get chapter timestamps for conflict detection
  */
@@ -1276,10 +1504,57 @@ export async function getChapterTimestamps(bookId: string): Promise<Record<strin
 }
 
 /**
- * Load a book from database and convert to App format
+ * Load only revision passes and completions for a book (e.g. after loading book from file).
+ */
+export async function getRevisionDataForBook(bookId: string): Promise<{
+  revisionPasses: RevisionPass[];
+  chapterRevisionCompletions: ChapterRevisionCompletion[];
+}> {
+  const db = getDatabase();
+  const passes = await db.revisionPass.findMany({
+    where: { bookId },
+    orderBy: { revisionNumber: 'asc' },
+    include: { completions: true },
+  });
+  const revisionPasses: RevisionPass[] = passes.map((rp) => ({
+    id: rp.id,
+    bookId: rp.bookId,
+    revisionNumber: rp.revisionNumber,
+    title: rp.title,
+    date: rp.date.toISOString(),
+  }));
+  const chapterRevisionCompletions: ChapterRevisionCompletion[] = passes.flatMap((rp) =>
+    (rp.completions || []).map((c: { id: string; chapterId: string; revisionId: string; completedAt: Date | null }) => ({
+      id: c.id,
+      chapterId: c.chapterId,
+      revisionId: c.revisionId,
+      completedAt: c.completedAt?.toISOString(),
+    }))
+  );
+  return { revisionPasses, chapterRevisionCompletions };
+}
+
+/**
+ * Load a book from database and convert to App format.
+ * Outline is loaded separately so the app still works if the book_outlines migration has not been run.
  */
 export async function loadBookFromDatabase(bookId: string): Promise<Book | null> {
   const dbBook = await getBookById(bookId);
   if (!dbBook) return null;
-  return await dbBookToAppBook(dbBook);
+  let outlineRow: DbBookWithRelations['outline'] = null;
+  try {
+    const outline = await getBookOutline(bookId);
+    if (outline) {
+      outlineRow = {
+        id: outline.id,
+        bookId: outline.bookId,
+        content: outline.content,
+        updatedAt: new Date(outline.updatedAt),
+      } as DbBookWithRelations['outline'];
+    }
+  } catch {
+    // book_outlines table may not exist yet (migration not run)
+  }
+  const dbBookWithOutline: DbBookWithRelations = { ...dbBook, outline: outlineRow };
+  return await dbBookToAppBook(dbBookWithOutline);
 }

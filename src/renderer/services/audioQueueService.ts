@@ -22,6 +22,10 @@ export interface AudioQueueItem {
   chapterText: string;
   /** 1-based chapter number for exported filename (e.g. "Chapter 3 - Title.mp3") */
   chapterNumber?: number;
+  /** Book ID when item was queued; used when persisting export path so it stays correct if user switches books */
+  bookId?: string;
+  /** When set, save MP3 directly to this folder when ready (no "Click to save" toast). */
+  saveDirectory?: string;
   voice: TTSVoice;
   uploadToGoogleDrive: boolean;
   googleDriveFolderId?: string;
@@ -262,8 +266,25 @@ class AudioQueueService {
             });
           }
           if (bgTask) removeBackgroundTask(bgTask.id);
+        } else if (nextItem.saveDirectory && typeof window.electronAPI?.writeMp3ToPath === 'function') {
+          // Known save folder: write directly and persist path (no toast "Click to save")
+          const filePath = await window.electronAPI.writeMp3ToPath(base64Audio, nextItem.saveDirectory, fileName);
+          if (filePath) {
+            const bookId = nextItem.bookId ?? useBookStore.getState().book?.id;
+            if (bookId && typeof window.electronAPI?.storeSet === 'function') {
+              await window.electronAPI.storeSet(`audio-export-path:${bookId}:${nextItem.chapterId}`, filePath);
+              window.dispatchEvent(new CustomEvent('audio-export-saved', { detail: { bookId, chapterId: nextItem.chapterId, filePath } }));
+            }
+            addToast({
+              type: 'success',
+              title: `Saved: ${nextItem.chapterTitle}`,
+              message: filePath.split(/[/\\]/).pop(),
+              duration: 5000,
+            });
+          }
+          if (bgTask) removeBackgroundTask(bgTask.id);
         } else {
-          // Cap in-memory buffers to avoid unbounded RAM use (each can be several MB)
+          // No save folder: keep buffer and show "Click to save" toast
           while (this.pendingAudioBuffers.size >= MAX_PENDING_AUDIO_BUFFERS) {
             const oldestWithBuffer = this.queue.find(
               item => (item.status === 'complete' || item.status === 'error') && this.pendingAudioBuffers.has(item.id)
@@ -285,9 +306,10 @@ class AudioQueueService {
                   const b64 = arrayBufferToBase64(buffer);
                   const filePath = await saveAudioToFile(b64, fileName);
                   if (filePath) {
-                    const bookId = useBookStore.getState().book?.id;
+                    const bookId = nextItem.bookId ?? useBookStore.getState().book?.id;
                     if (bookId && typeof window.electronAPI?.storeSet === 'function') {
                       window.electronAPI.storeSet(`audio-export-path:${bookId}:${nextItem.chapterId}`, filePath);
+                      window.dispatchEvent(new CustomEvent('audio-export-saved', { detail: { bookId, chapterId: nextItem.chapterId, filePath } }));
                     }
                     addToast({
                       type: 'success',

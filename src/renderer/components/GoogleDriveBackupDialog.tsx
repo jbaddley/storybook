@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { googleDocsService, GoogleDriveFile } from '../services/googleDocsService';
 import { googleAuthService } from '../services/googleAuthService';
 import { fileService } from '../services/fileService';
+import { databaseService } from '../services/databaseService';
 import { useBookStore } from '../stores/bookStore';
 
 interface GoogleDriveBackupDialogProps {
@@ -114,8 +115,11 @@ export const GoogleDriveBackupDialog: React.FC<GoogleDriveBackupDialogProps> = (
       
       setProgress('Loading book data...');
       const loadedBook = await fileService.loadBook(base64Data);
-      
-      setBook(loadedBook);
+      const revisionData = await databaseService.getRevisionDataForBook(loadedBook.id);
+      const bookToSet = revisionData
+        ? { ...loadedBook, revisionPasses: revisionData.revisionPasses, chapterRevisionCompletions: revisionData.chapterRevisionCompletions }
+        : loadedBook;
+      setBook(bookToSet);
       setSuccess(`Restored "${file.name}" successfully!`);
       setProgress('');
       

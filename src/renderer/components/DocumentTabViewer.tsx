@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { useBookStore } from '../stores/bookStore';
-import { Character, Location, TimelineEvent, DocumentTab, StoryCraftChapterFeedback, StoryCraftChecklistItem, Theme, Motif, Symbol, generateId } from '../../shared/types';
+import { Character, Location, Song, TimelineEvent, DocumentTab, StoryCraftChapterFeedback, StoryCraftChecklistItem, Theme, Motif, Symbol, generateId } from '../../shared/types';
 import { ChapterVariationDialog } from './ChapterVariationDialog';
+import { OutlinerView } from './OutlinerView';
 import PlotAnalysisView from './PlotAnalysisView';
 import { openAIService } from '../services/openaiService';
 import { useOpenAI } from '../hooks/useOpenAI';
+import { outlineContentToPlainText } from '../utils/outlineContent';
 
 // Icons
 const ChevronIcon = ({ expanded }: { expanded: boolean }) => (
@@ -159,10 +161,14 @@ export const DocumentTabViewer: React.FC<DocumentTabViewerProps> = ({ tab }) => 
       return <TimelineView />;
     case 'storycraft':
       return <StoryCraftView />;
+    case 'outliner':
+      return <OutlinerView />;
     case 'themes':
       return <ThemesView />;
     case 'plotanalysis':
       return <PlotAnalysisView />;
+    case 'songs':
+      return <SongsView />;
     case 'custom':
       return <CustomTabView tab={tab} />;
     default:
@@ -345,6 +351,204 @@ const CharactersView: React.FC = () => {
               {/* Divider between characters */}
               {index < sortedCharacters.length - 1 && (
                 <hr className="character-divider" />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// Song Edit Form Component (onSave: full or partial updates; for Add, caller fills defaults)
+const SongEditForm: React.FC<{
+  song: Song;
+  onSave: (updates: Partial<Omit<Song, 'id'>>) => void;
+  onCancel: () => void;
+}> = ({ song, onSave, onCancel }) => {
+  const [title, setTitle] = useState(song.title);
+  const [description, setDescription] = useState(song.description ?? '');
+  const [lyrics, setLyrics] = useState(song.lyrics ?? '');
+  const [style, setStyle] = useState(song.style ?? '');
+  const [genre, setGenre] = useState(song.genre ?? '');
+  const [charactersStr, setCharactersStr] = useState((song.characters ?? []).join(', '));
+  const [tempo, setTempo] = useState(song.tempo ?? '');
+  const [key, setKey] = useState(song.key ?? '');
+  const [instrumentsStr, setInstrumentsStr] = useState((song.instruments ?? []).join(', '));
+
+  const handleSave = () => {
+    onSave({
+      title: title.trim(),
+      description: description.trim() || undefined,
+      lyrics: lyrics.trim() || undefined,
+      style: style.trim(),
+      genre: genre.trim(),
+      characters: charactersStr.split(',').map(s => s.trim()).filter(Boolean),
+      tempo: tempo.trim(),
+      key: key.trim(),
+      instruments: instrumentsStr.split(',').map(s => s.trim()).filter(Boolean),
+    });
+  };
+
+  return (
+    <div className="edit-form">
+      <div className="edit-form-field">
+        <label>Title *</label>
+        <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Song title" />
+      </div>
+      <div className="edit-form-field">
+        <label>Description</label>
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short description..." rows={2} />
+      </div>
+      <div className="edit-form-field">
+        <label>Lyrics</label>
+        <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value)} placeholder="Full lyrics (verse, chorus, etc.)..." rows={8} style={{ fontFamily: 'inherit', whiteSpace: 'pre-wrap' }} />
+      </div>
+      <div className="edit-form-field">
+        <label>Style</label>
+        <input type="text" value={style} onChange={(e) => setStyle(e.target.value)} placeholder="e.g. ballad, upbeat" />
+      </div>
+      <div className="edit-form-field">
+        <label>Genre</label>
+        <input type="text" value={genre} onChange={(e) => setGenre(e.target.value)} placeholder="e.g. folk, rock" />
+      </div>
+      <div className="edit-form-field">
+        <label>Characters (comma-separated)</label>
+        <input type="text" value={charactersStr} onChange={(e) => setCharactersStr(e.target.value)} placeholder="Character names" />
+      </div>
+      <div className="edit-form-field">
+        <label>Tempo</label>
+        <input type="text" value={tempo} onChange={(e) => setTempo(e.target.value)} placeholder="e.g. 120 BPM" />
+      </div>
+      <div className="edit-form-field">
+        <label>Key</label>
+        <input type="text" value={key} onChange={(e) => setKey(e.target.value)} placeholder="e.g. C major" />
+      </div>
+      <div className="edit-form-field">
+        <label>Instruments (comma-separated)</label>
+        <input type="text" value={instrumentsStr} onChange={(e) => setInstrumentsStr(e.target.value)} placeholder="e.g. guitar, piano" />
+      </div>
+      <div className="edit-form-actions">
+        <button className="btn-save" onClick={handleSave}><SaveIcon /> Save</button>
+        <button className="btn-cancel" onClick={onCancel}><CancelIcon /> Cancel</button>
+      </div>
+    </div>
+  );
+};
+
+// Songs View
+const SongsView: React.FC = () => {
+  const { book, addSong, updateSong, deleteSong } = useBookStore();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [isAdding, setIsAdding] = useState(false);
+  const songs = book.songs ?? [];
+
+  const handleDelete = (id: string, title: string) => {
+    if (confirm(`Delete song "${title}"?`)) deleteSong(id);
+  };
+
+  const handleAdd = (updates: Partial<Omit<Song, 'id'>>) => {
+    addSong({
+      title: updates.title ?? '',
+      description: updates.description,
+      lyrics: updates.lyrics,
+      style: updates.style ?? '',
+      genre: updates.genre ?? '',
+      characters: updates.characters ?? [],
+      tempo: updates.tempo ?? '',
+      key: updates.key ?? '',
+      instruments: updates.instruments ?? [],
+    });
+    setIsAdding(false);
+  };
+
+  if (songs.length === 0 && !isAdding) {
+    return (
+      <div className="tab-viewer">
+        <div className="tab-viewer-header">
+          <h2>Songs</h2>
+          <p className="text-muted">Add songs referenced in your story (title, style, genre, characters, tempo, key, instruments).</p>
+        </div>
+        <EmptyState
+          icon="🎵"
+          title="No Songs Yet"
+          description={
+            <>
+              Add songs that appear in your book so the AI can reference them in chat, Story Craft, and variations.
+              <button className="btn-primary" style={{ marginTop: 12 }} onClick={() => setIsAdding(true)}>Add first song</button>
+            </>
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="tab-viewer">
+      <div className="tab-viewer-header">
+        <h2>Songs</h2>
+        <p className="text-muted">{songs.length} song{songs.length !== 1 ? 's' : ''}</p>
+        <button className="btn-primary" onClick={() => setIsAdding(true)} disabled={isAdding}>Add song</button>
+      </div>
+      <div className="characters-document">
+        {isAdding && (
+          <div className="character-entry">
+            <SongEditForm
+              song={{
+                id: '',
+                title: '',
+                description: '',
+                lyrics: '',
+                style: '',
+                genre: '',
+                characters: [],
+                tempo: '',
+                key: '',
+                instruments: [],
+              }}
+              onSave={handleAdd}
+              onCancel={() => setIsAdding(false)}
+            />
+          </div>
+        )}
+        {songs.map((song, index) => {
+          const isEditing = editingId === song.id;
+          return (
+            <div key={song.id} className="character-entry">
+              {isEditing ? (
+                <SongEditForm
+                  song={song}
+                  onSave={(updates) => {
+                    updateSong(song.id, updates);
+                    setEditingId(null);
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              ) : (
+                <>
+                  <div className="entry-header">
+                    <h3 className="character-name">{song.title}</h3>
+                    <div className="entry-actions">
+                      <button className="btn-icon" onClick={() => setEditingId(song.id)} title="Edit"><EditIcon /></button>
+                      <button className="btn-icon btn-danger" onClick={() => handleDelete(song.id, song.title)} title="Delete"><DeleteIcon /></button>
+                    </div>
+                  </div>
+                  {song.description && <p className="character-description">{song.description}</p>}
+                  {song.lyrics && (
+                    <div className="song-lyrics" style={{ marginTop: 8, whiteSpace: 'pre-wrap', fontSize: '0.95em', lineHeight: 1.5, color: 'var(--text-secondary, #666)' }}>
+                      {song.lyrics}
+                    </div>
+                  )}
+                  <div className="character-aliases" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: 4 }}>
+                    {song.style && <span className="label">Style: {song.style}</span>}
+                    {song.genre && <span className="label">Genre: {song.genre}</span>}
+                    {song.tempo && <span className="label">Tempo: {song.tempo}</span>}
+                    {song.key && <span className="label">Key: {song.key}</span>}
+                    {song.characters?.length ? <span className="label">Characters: {song.characters.join(', ')}</span> : null}
+                    {song.instruments?.length ? <span className="label">Instruments: {song.instruments.join(', ')}</span> : null}
+                  </div>
+                  {index < songs.length - 1 && <hr className="character-divider" />}
+                </>
               )}
             </div>
           );
@@ -1072,6 +1276,19 @@ const StoryCraftView: React.FC = () => {
       const chapterText = extractTextFromTipTapContent(chapter.content);
       const themesContext = book.extracted.themesAndMotifs?.themes.map(t => t.name).join(', ');
       const previousPromises = getAllPromisesMade(chapter.order);
+      const songsContext = (book.songs ?? []).length > 0
+        ? (book.songs ?? []).map(s => {
+            const chars = s.characters?.length ? ` Characters: ${s.characters.join(', ')}` : '';
+            const inst = s.instruments?.length ? ` Instruments: ${s.instruments.join(', ')}` : '';
+            const style = s.style ? ` Style: ${s.style}` : '';
+            const genre = s.genre ? ` Genre: ${s.genre}` : '';
+            const tempo = s.tempo ? ` Tempo: ${s.tempo}` : '';
+            const key = s.key ? ` Key: ${s.key}` : '';
+            const desc = s.description ? ` ${s.description}` : '';
+            const lyricsPart = s.lyrics ? ` Lyrics: ${s.lyrics.replace(/\n/g, ' | ')}` : '';
+            return `${s.title}:${desc}${lyricsPart}${style}${genre}${chars}${tempo}${key}${inst}`;
+          }).join('\n')
+        : undefined;
       const result = await openAIService.extractStoryCraftFeedback(
         chapterText,
         chapter.id,
@@ -1081,6 +1298,8 @@ const StoryCraftView: React.FC = () => {
           previousPromises: previousPromises.length > 0 ? previousPromises : undefined,
           bookSettings: book.settings.bookContext,
           chapterPurpose: chapter.purpose,
+          bookOutline: outlineContentToPlainText(book.outline?.content),
+          songs: songsContext,
         }
       );
       if (result) {
@@ -1185,6 +1404,7 @@ const StoryCraftView: React.FC = () => {
               >
                 <div className="storycraft-header-left">
                   <ChevronIcon expanded={isExpanded} />
+                  <span className="storycraft-chapter-number">Ch. {chapter.order}</span>
                   <h3 className="storycraft-chapter-title">
                     {chapter.title}
                   </h3>

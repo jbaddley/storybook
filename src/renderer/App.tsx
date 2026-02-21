@@ -18,6 +18,7 @@ import { RecoveryTool } from './components/RecoveryTool';
 import { ToastContainer } from './components/ToastNotification';
 import { BackgroundTaskIndicator } from './components/BackgroundTaskIndicator';
 import { AudioExportDialog } from './components/AudioExportDialog';
+import { OpenFromCloudDialog } from './components/OpenFromCloudDialog';
 import { useFileOperations } from './hooks/useFileOperations';
 import { useMenuEvents } from './hooks/useMenuEvents';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -107,8 +108,10 @@ const App: React.FC = () => {
            { id: 'locations-tab', title: 'Locations', icon: '📍', tabType: 'locations' },
            { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
            { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+           { id: 'outliner-tab', title: 'Outliner', icon: '📋', tabType: 'outliner' },
            { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
            { id: 'plotanalysis-tab', title: 'Plot Analysis', icon: '🔍', tabType: 'plotanalysis' },
+           { id: 'songs-tab', title: 'Songs', icon: '🎵', tabType: 'songs' },
          ];
          const def = permanentTabDefs.find(pt => pt.id === ui.activeDocumentTabId);
          if (def) {
@@ -136,6 +139,7 @@ const App: React.FC = () => {
   const [isGoogleDriveBackupOpen, setGoogleDriveBackupOpen] = useState(false);
   const [isPdfExportOpen, setPdfExportOpen] = useState(false);
   const [isAudioExportAllOpen, setIsAudioExportAllOpen] = useState(false);
+  const [isOpenFromCloudOpen, setOpenFromCloudOpen] = useState(false);
   
   // Autosave hook - saves directly to .sbk file
   const { 
@@ -166,6 +170,7 @@ const App: React.FC = () => {
   useMenuEvents({
     onNew: handleNew,
     onOpen: handleOpen,
+    onOpenFromCloud: () => setOpenFromCloudOpen(true),
     onSave: handleSave,
     onSaveAs: handleSaveAs,
     onExportDocx: handleExportDocx,
@@ -196,6 +201,9 @@ const App: React.FC = () => {
       {/* Title bar drag region */}
       <div className="titlebar drag-region">
         <span className="titlebar-title">{book.title}</span>
+        <span className="titlebar-book-id" title="Book ID — same in .sbk and database when linked">
+          {book.id}
+        </span>
         {ui.isDirty && <span className="titlebar-dirty">•</span>}
         <BackgroundTaskIndicator />
         <AutosaveIndicator status={autosaveStatus} lastSaved={lastSaved} filePath={filePath} />
@@ -323,6 +331,14 @@ const App: React.FC = () => {
           onClose={() => setIsAudioExportAllOpen(false)}
           chapterId=""
           exportAll
+        />
+      )}
+      
+      {/* Open from cloud */}
+      {isOpenFromCloudOpen && (
+        <OpenFromCloudDialog
+          open={isOpenFromCloudOpen}
+          onClose={() => setOpenFromCloudOpen(false)}
         />
       )}
       

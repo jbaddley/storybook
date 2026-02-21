@@ -78,6 +78,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('menu:open', callback);
     return () => ipcRenderer.removeListener('menu:open', callback);
   },
+  onMenuOpenFromCloud: (callback: () => void) => {
+    ipcRenderer.on('menu:open-from-cloud', callback);
+    return () => ipcRenderer.removeListener('menu:open-from-cloud', callback);
+  },
   onMenuSave: (callback: () => void) => {
     ipcRenderer.on('menu:save', callback);
     return () => ipcRenderer.removeListener('menu:save', callback);
@@ -219,12 +223,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dbDeleteStoryCraftFeedback: (chapterId: string) =>
     ipcRenderer.invoke('db:delete-story-craft-feedback', chapterId) as Promise<boolean>,
   
+  // Database: Get book outline
+  dbGetBookOutline: (bookId: string) => ipcRenderer.invoke('db:get-book-outline', bookId),
+  
+  // Database: Upsert book outline
+  dbUpsertBookOutline: (bookId: string, content: string) =>
+    ipcRenderer.invoke('db:upsert-book-outline', bookId, content),
+  
   // Database: Sync entire book to database
   dbSyncBookToDatabase: (params: { userId: string; book: unknown }) => 
     ipcRenderer.invoke('db:sync-book-to-database', params),
   
   // Database: Load book from database in app format
   dbLoadBookFromDatabase: (bookId: string) => ipcRenderer.invoke('db:load-book-from-database', bookId),
+  dbGetRevisionDataForBook: (bookId: string) => ipcRenderer.invoke('db:get-revision-data-for-book', bookId),
   
   // Database: Detect chapter conflicts
   dbDetectChapterConflicts: (params: { bookId: string; localChapters: unknown[] }) => 
@@ -237,6 +249,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('db:add-chapter-variation', chapterId, variation),
   dbDeleteChapterVariation: (variationId: string) =>
     ipcRenderer.invoke('db:delete-chapter-variation', variationId),
+  dbCreateRevisionPass: (params: { bookId: string; title: string; date: string }) =>
+    ipcRenderer.invoke('db:create-revision-pass', params),
+  dbSetChapterCompletedForRevision: (params: { chapterId: string; revisionId: string }) =>
+    ipcRenderer.invoke('db:set-chapter-completed-for-revision', params),
+  dbUnsetChapterCompletedForRevision: (params: { chapterId: string; revisionId: string }) =>
+    ipcRenderer.invoke('db:unset-chapter-completed-for-revision', params),
 });
 
 // Type definitions are in src/shared/electron-api.d.ts

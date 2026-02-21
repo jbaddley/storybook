@@ -60,8 +60,10 @@ export const DocumentTabs: React.FC<DocumentTabsProps> = ({ onTabSelect }) => {
     { id: 'locations-tab', title: 'Locations', icon: '📍', tabType: 'locations' },
     { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
     { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+    { id: 'outliner-tab', title: 'Outliner', icon: '📋', tabType: 'outliner' },
     { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
     { id: 'plotanalysis-tab', title: 'Plot Analysis', icon: '🔍', tabType: 'plotanalysis' },
+    { id: 'songs-tab', title: 'Songs', icon: '🎵', tabType: 'songs' },
   ];
   
   const now = new Date().toISOString();
@@ -159,6 +161,8 @@ export const DocumentTabs: React.FC<DocumentTabsProps> = ({ onTabSelect }) => {
         const themes = book.extracted.themesAndMotifs;
         if (!themes) return '0';
         return `${(themes.themes?.length || 0) + (themes.motifs?.length || 0) + (themes.symbols?.length || 0)}`;
+      case 'songs':
+        return `${book.songs?.length ?? 0}`;
       default:
         return '';
     }

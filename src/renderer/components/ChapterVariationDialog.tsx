@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { openAIService, ChangeReport } from '../services/openaiService';
 import { databaseService } from '../services/databaseService';
+import { outlineContentToPlainText } from '../utils/outlineContent';
 import { 
   generateId, 
   TipTapContent, 
@@ -246,6 +247,20 @@ export const ChapterVariationDialog: React.FC<ChapterVariationDialogProps> = ({
       .map(t => `${t.name}: ${t.description}`)
       .join('\n');
 
+    const songs = (book.songs ?? [])
+      .map(s => {
+        const chars = s.characters?.length ? ` Characters: ${s.characters.join(', ')}` : '';
+        const inst = s.instruments?.length ? ` Instruments: ${s.instruments.join(', ')}` : '';
+        const style = s.style ? ` Style: ${s.style}` : '';
+        const genre = s.genre ? ` Genre: ${s.genre}` : '';
+        const tempo = s.tempo ? ` Tempo: ${s.tempo}` : '';
+        const key = s.key ? ` Key: ${s.key}` : '';
+        const desc = s.description ? ` ${s.description}` : '';
+        const lyricsBlock = s.lyrics ? ` Lyrics: ${s.lyrics.replace(/\n/g, ' | ')}` : '';
+        return `${s.title}:${desc}${lyricsBlock}${style}${genre}${chars}${tempo}${key}${inst}`;
+      })
+      .join('\n');
+
     const sortedChapters = getSortedChapters();
     const currentChapterIndex = sortedChapters.findIndex(c => c.id === chapterId);
 
@@ -447,6 +462,7 @@ export const ChapterVariationDialog: React.FC<ChapterVariationDialogProps> = ({
       characters: characters || undefined,
       locations: locations || undefined,
       themes: themes || undefined,
+      songs: songs || undefined,
       previousChaptersSummary: previousChaptersSummary || undefined,
       nextChaptersSummary: fullNextContext || undefined,
       chatContext,
@@ -474,6 +490,7 @@ export const ChapterVariationDialog: React.FC<ChapterVariationDialogProps> = ({
       chapterPurpose: chapter.purpose
         ? (CHAPTER_PURPOSE_OPTIONS.find(o => o.value === chapter.purpose)?.label ?? chapter.purpose)
         : undefined,
+      bookOutline: outlineContentToPlainText(book.outline?.content) || undefined,
     };
   };
   

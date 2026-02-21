@@ -44,6 +44,10 @@ export function createApplicationMenu(mainWindow: BrowserWindow): Menu {
           accelerator: 'CmdOrCtrl+O',
           click: () => mainWindow.webContents.send('menu:open'),
         },
+        {
+          label: 'Open from cloud...',
+          click: () => mainWindow.webContents.send('menu:open-from-cloud'),
+        },
         { type: 'separator' },
         {
           label: 'Import',

@@ -12,7 +12,7 @@ class FileService {
   async saveBook(book: Book): Promise<string> {
     const zip = new JSZip();
 
-    // Create manifest
+    // Create manifest (include bookId so this file stays linked to the same DB book on save)
     const manifest: SBKManifest = {
       version: SBK_VERSION,
       title: book.title,
@@ -21,6 +21,7 @@ class FileService {
       chapterOrder: book.chapters.map((c) => c.id),
       createdAt: book.createdAt,
       updatedAt: new Date().toISOString(),
+      bookId: book.id,
     };
     zip.file('manifest.json', JSON.stringify(manifest, null, 2));
 
@@ -82,6 +83,20 @@ class FileService {
         };
         tabsFolder.file(`${tab.id}.json`, JSON.stringify(tabData, null, 2));
       }
+    }
+
+    // Save book outline (Markdown)
+    if (book.outline && book.outline.content) {
+      zip.file('outline.json', JSON.stringify({
+        content: book.outline.content,
+        updatedAt: book.outline.updatedAt,
+      }, null, 2));
+    }
+
+    // Save songs
+    const songs = book.songs ?? [];
+    if (songs.length > 0) {
+      zip.file('songs.json', JSON.stringify(songs, null, 2));
     }
 
     // Generate zip file
@@ -277,7 +292,10 @@ class FileService {
         { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
         { id: 'summaries-tab', title: 'Summaries', icon: '📝', tabType: 'summaries' },
         { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+        { id: 'outliner-tab', title: 'Outliner', icon: '📋', tabType: 'outliner' },
         { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
+        { id: 'plotanalysis-tab', title: 'Plot Analysis', icon: '🔍', tabType: 'plotanalysis' },
+        { id: 'songs-tab', title: 'Songs', icon: '🎵', tabType: 'songs' },
       ];
       
       const missingTabs = permanentTabDefs
@@ -309,17 +327,53 @@ class FileService {
       };
     }
 
+    // Use linked book id from manifest when present so save syncs to the same DB row
+    const bookId = manifest.bookId ?? `book-${Date.now()}`;
+
+    // Read book outline if present
+    let outline: Book['outline'] = null;
+    const outlineFile = zip.file('outline.json');
+    if (outlineFile) {
+      try {
+        const outlineData = JSON.parse(await outlineFile.async('string'));
+        outline = {
+          id: `outline-${bookId}`,
+          bookId,
+          content: outlineData.content ?? '',
+          updatedAt: outlineData.updatedAt ?? new Date().toISOString(),
+        };
+      } catch {
+        outline = null;
+      }
+    }
+
+    // Read songs if present
+    let songs: Book['songs'] = [];
+    const songsFile = zip.file('songs.json');
+    if (songsFile) {
+      try {
+        songs = JSON.parse(await songsFile.async('string'));
+        if (!Array.isArray(songs)) songs = [];
+      } catch {
+        songs = [];
+      }
+    }
+
     // Construct book object
     const book: Book = {
-      id: `book-${Date.now()}`,
+      id: bookId,
       title: manifest.title,
       author: manifest.author,
       description: manifest.description,
       chapters,
       documentTabs,
+      outline,
       metadata,
       settings,
       extracted,
+      revisionPasses: [],
+      chapterRevisionCompletions: [],
+      songs,
       createdAt: manifest.createdAt,
       updatedAt: manifest.updatedAt,
     };

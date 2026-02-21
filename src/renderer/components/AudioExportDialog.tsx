@@ -67,6 +67,23 @@ export function clearAudioExportFolder(): void {
   currentGoogleDriveExportFolderId = null;
 }
 
+/**
+ * Ensure the local export folder exists (when "Create new folder" is used).
+ * Prompts for parent directory once per session, creates timestamped subfolder.
+ * Returns the folder path to save into, or null if user cancels or settings don't use createNewFolder.
+ */
+export async function ensureLocalExportFolder(): Promise<string | null> {
+  const settings = loadAudioSettings();
+  if (!settings.createNewFolder) return null;
+  if (currentExportFolderPath) return currentExportFolderPath;
+  const bookTitle = useBookStore.getState().book?.title ?? '';
+  const folderName = getExportFolderName(bookTitle);
+  const path = await window.electronAPI.pickDirAndCreateSubfolder(folderName);
+  if (!path) return null;
+  currentExportFolderPath = path;
+  return path;
+}
+
 /** Generate a safe folder name: Book Title + timestamp (e.g. "My_Book_2025-02-03_14-30-52") */
 function getExportFolderName(bookTitle: string): string {
   const safeTitle = (bookTitle || 'Audio_Export')
@@ -595,6 +612,16 @@ export const AudioExportDialog: React.FC<AudioExportDialogProps> = ({
     if (exportAll) {
       const isGoogleAuthenticated = uploadToGoogleDrive ? await googleAuthService.restoreSession() : false;
       const uploadToDrive = uploadToGoogleDrive && isGoogleAuthenticated;
+      // If saving locally with "Create new folder", choose folder once now so files auto-save there (no per-item toasts).
+      let saveDirectory: string | null = null;
+      if (!uploadToDrive && createNewFolder) {
+        saveDirectory = await ensureLocalExportFolder();
+        if (saveDirectory === null) {
+          const { addToast } = useBookStore.getState();
+          addToast({ type: 'info', title: 'Export cancelled', message: 'No folder selected.' });
+          return;
+        }
+      }
       for (const ch of chaptersToExport) {
         const text = extractTextFromContent(ch.content);
         if (!text.trim() || audioQueueService.isInQueue(ch.id)) continue;
@@ -603,6 +630,8 @@ export const AudioExportDialog: React.FC<AudioExportDialogProps> = ({
           chapterTitle: ch.title,
           chapterText: text,
           chapterNumber: ch.order,
+          bookId: book?.id,
+          saveDirectory: saveDirectory ?? undefined,
           voice: selectedVoice,
           uploadToGoogleDrive: uploadToDrive,
           googleDriveFolderId: selectedFolderId,
@@ -613,7 +642,9 @@ export const AudioExportDialog: React.FC<AudioExportDialogProps> = ({
         addToast({
           type: 'success',
           title: 'Audio export',
-          message: `Added ${chaptersToExport.length} chapter(s) to the audio queue.`,
+          message: saveDirectory
+            ? `Added ${chaptersToExport.length} chapter(s). Files will save to the chosen folder as each is ready.`
+            : `Added ${chaptersToExport.length} chapter(s) to the audio queue.`,
           duration: 5000,
         });
       } else {
@@ -636,13 +667,24 @@ export const AudioExportDialog: React.FC<AudioExportDialogProps> = ({
       setError('This chapter is already in the audio queue.');
       return;
     }
+    const uploadToDrive = uploadToGoogleDrive && isGoogleAuthenticated;
+    let saveDirectory: string | null = null;
+    if (!uploadToDrive && createNewFolder) {
+      saveDirectory = await ensureLocalExportFolder();
+      if (saveDirectory === null) {
+        setError('No folder selected.');
+        return;
+      }
+    }
     audioQueueService.addToQueue({
       chapterId: chapter!.id,
       chapterTitle: chapter!.title,
       chapterText,
       chapterNumber: chapter!.order,
+      bookId: book?.id,
+      saveDirectory: saveDirectory ?? undefined,
       voice: selectedVoice,
-      uploadToGoogleDrive: uploadToGoogleDrive && isGoogleAuthenticated,
+      uploadToGoogleDrive: uploadToDrive,
       googleDriveFolderId: selectedFolderId,
     });
     onClose();

@@ -8,6 +8,7 @@ import { NotesPanel } from './NotesPanel';
 import { openAIService } from '../services/openaiService';
 import { plotAnalysisService } from '../services/plotAnalysisService';
 import { normalizeQuotesInTipTapContent } from '../utils/quoteNormalize';
+import { outlineContentToPlainText } from '../utils/outlineContent';
 
 // Icons
 const SparklesIcon = () => (
@@ -30,6 +31,16 @@ const ExtractIcon = () => (
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
     <polyline points="7 10 12 15 17 10"/>
     <line x1="12" y1="15" x2="12" y2="3"/>
+  </svg>
+);
+
+const StoryCraftIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+    <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
+    <line x1="9" y1="9" x2="9.01" y2="9"/>
+    <line x1="15" y1="9" x2="15.01" y2="9"/>
+    <path d="M8 6h8v2H8z"/>
   </svg>
 );
 
@@ -506,6 +517,8 @@ export const AIPanel: React.FC = () => {
   const activeChapter = getActiveChapter();
   const { ui, setAIPanelTab, setPendingChatMessage, setChatInputPreFill, setPanelSettings } = useBookStore();
   const activeTab = ui.aiPanelTab;
+  const isOutlinerActive = ui.activeDocumentTabId === 'outliner-tab';
+  const hasDocumentForAI = !!activeChapter || isOutlinerActive;
   const pendingChatMessage = ui.pendingChatMessage;
   const chatInputPreFill = ui.chatInputPreFill;
   
@@ -531,6 +544,140 @@ export const AIPanel: React.FC = () => {
     setPendingChatMessage(text);
     setAIPanelTab('chat');
     setPanelSettings({ showAIPanel: true });
+  };
+
+  // Story Craft analysis only (no characters, locations, timeline, summary, themes, or inline comments)
+  const handleStoryCraftOnly = async () => {
+    if (!activeChapter || !isConfigured) return;
+    setStoryCraftRunningChapterId(activeChapter.id);
+    const existingFeedback = getStoryCraftFeedback(activeChapter.id);
+    if (!existingFeedback) {
+      const placeholder: StoryCraftChapterFeedback = {
+        chapterId: activeChapter.id,
+        chapterTitle: activeChapter.title,
+        assessment: {
+          plotProgression: { score: 0, notes: '' },
+          characterDevelopment: { score: 0, notes: '' },
+          themeReinforcement: { score: 0, notes: '' },
+          pacing: { score: 0, notes: '' },
+          conflictTension: { score: 0, notes: '' },
+          hookEnding: { score: 0, notes: '' },
+          overallNotes: '',
+        },
+        checklist: [],
+        summary: 'Analyzing…',
+        generatedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      };
+      replaceStoryCraftFeedback(activeChapter.id, placeholder);
+    }
+    try {
+      const chapterText = extractTextFromContent(activeChapter.content);
+      const themesContext = book.extracted.themesAndMotifs?.themes.map(t => t.name).join(', ');
+      const previousPromises = getAllPromisesMade(activeChapter.order);
+      const songsContext = (book.songs ?? []).length > 0
+        ? (book.songs ?? []).map(s => {
+            const chars = s.characters?.length ? ` Characters: ${s.characters.join(', ')}` : '';
+            const inst = s.instruments?.length ? ` Instruments: ${s.instruments.join(', ')}` : '';
+            const style = s.style ? ` Style: ${s.style}` : '';
+            const genre = s.genre ? ` Genre: ${s.genre}` : '';
+            const tempo = s.tempo ? ` Tempo: ${s.tempo}` : '';
+            const key = s.key ? ` Key: ${s.key}` : '';
+            const desc = s.description ? ` ${s.description}` : '';
+            const lyricsPart = s.lyrics ? ` Lyrics: ${s.lyrics.replace(/\n/g, ' | ')}` : '';
+            return `${s.title}:${desc}${lyricsPart}${style}${genre}${chars}${tempo}${key}${inst}`;
+          }).join('\n')
+        : undefined;
+      const storyCraftResult = await openAIService.extractStoryCraftFeedback(
+        chapterText,
+        activeChapter.id,
+        activeChapter.title,
+        {
+          themes: themesContext,
+          previousPromises: previousPromises.length > 0 ? previousPromises : undefined,
+          bookSettings: book.settings.bookContext,
+          chapterPurpose: activeChapter.purpose,
+          bookOutline: outlineContentToPlainText(book.outline?.content),
+          songs: songsContext,
+        }
+      );
+      if (storyCraftResult) {
+        const newFeedback: StoryCraftChapterFeedback = {
+          chapterId: activeChapter.id,
+          chapterTitle: activeChapter.title,
+          assessment: storyCraftResult.assessment,
+          checklist: storyCraftResult.checklist.map(item => ({
+            id: `check-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            suggestion: item.suggestion,
+            category: item.category as 'plot' | 'character' | 'theme' | 'pacing' | 'conflict' | 'hook' | 'general',
+            isCompleted: false,
+            addedAt: new Date().toISOString(),
+          })),
+          summary: storyCraftResult.summary,
+          promisesMade: storyCraftResult.promisesMade?.map(p => ({
+            id: generateId(),
+            type: p.type,
+            description: p.description,
+            context: p.context,
+            chapterId: activeChapter.id,
+            chapterTitle: activeChapter.title,
+          })),
+          promisesKept: storyCraftResult.promisesKept?.map(p => ({
+            promiseId: p.promiseId,
+            promiseDescription: p.promiseDescription,
+            howKept: p.howKept,
+            chapterWherePromised: p.chapterWherePromised,
+            chapterTitleWherePromised: p.chapterTitleWherePromised,
+          })),
+          generatedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+        replaceStoryCraftFeedback(activeChapter.id, newFeedback);
+      } else if (!existingFeedback) {
+        const failedPlaceholder: StoryCraftChapterFeedback = {
+          chapterId: activeChapter.id,
+          chapterTitle: activeChapter.title,
+          assessment: {
+            plotProgression: { score: 0, notes: '' },
+            characterDevelopment: { score: 0, notes: '' },
+            themeReinforcement: { score: 0, notes: '' },
+            pacing: { score: 0, notes: '' },
+            conflictTension: { score: 0, notes: '' },
+            hookEnding: { score: 0, notes: '' },
+            overallNotes: '',
+          },
+          checklist: [],
+          summary: 'Analysis failed. Click Re-run in Story Craft to try again.',
+          generatedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+        replaceStoryCraftFeedback(activeChapter.id, failedPlaceholder);
+      }
+    } catch (err) {
+      console.error('Story craft analysis failed:', err);
+      if (!existingFeedback) {
+        const failedPlaceholder: StoryCraftChapterFeedback = {
+          chapterId: activeChapter.id,
+          chapterTitle: activeChapter.title,
+          assessment: {
+            plotProgression: { score: 0, notes: '' },
+            characterDevelopment: { score: 0, notes: '' },
+            themeReinforcement: { score: 0, notes: '' },
+            pacing: { score: 0, notes: '' },
+            conflictTension: { score: 0, notes: '' },
+            hookEnding: { score: 0, notes: '' },
+            overallNotes: '',
+          },
+          checklist: [],
+          summary: 'Analysis failed. Click Re-run in Story Craft to try again.',
+          generatedAt: new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+        replaceStoryCraftFeedback(activeChapter.id, failedPlaceholder);
+      }
+    } finally {
+      setStoryCraftRunningChapterId(null);
+    }
   };
 
   // Combined extraction - extract all at once
@@ -591,6 +738,19 @@ export const AIPanel: React.FC = () => {
       
       let storyCraftResult;
       try {
+        const songsContext = (book.songs ?? []).length > 0
+          ? (book.songs ?? []).map(s => {
+              const chars = s.characters?.length ? ` Characters: ${s.characters.join(', ')}` : '';
+              const inst = s.instruments?.length ? ` Instruments: ${s.instruments.join(', ')}` : '';
+              const style = s.style ? ` Style: ${s.style}` : '';
+              const genre = s.genre ? ` Genre: ${s.genre}` : '';
+              const tempo = s.tempo ? ` Tempo: ${s.tempo}` : '';
+              const key = s.key ? ` Key: ${s.key}` : '';
+              const desc = s.description ? ` ${s.description}` : '';
+              const lyricsPart = s.lyrics ? ` Lyrics: ${s.lyrics.replace(/\n/g, ' | ')}` : '';
+              return `${s.title}:${desc}${lyricsPart}${style}${genre}${chars}${tempo}${key}${inst}`;
+            }).join('\n')
+          : undefined;
         storyCraftResult = await openAIService.extractStoryCraftFeedback(
           chapterText,
           activeChapter.id,
@@ -600,6 +760,8 @@ export const AIPanel: React.FC = () => {
             previousPromises: previousPromises.length > 0 ? previousPromises : undefined,
             bookSettings: book.settings.bookContext,
             chapterPurpose: activeChapter.purpose,
+            bookOutline: outlineContentToPlainText(book.outline?.content),
+            songs: songsContext,
           }
         );
       } catch (err) {
@@ -1268,6 +1430,19 @@ export const AIPanel: React.FC = () => {
           
           let feedback;
           try {
+            const songsContext = (book.songs ?? []).length > 0
+              ? (book.songs ?? []).map(s => {
+                  const chars = s.characters?.length ? ` Characters: ${s.characters.join(', ')}` : '';
+                  const inst = s.instruments?.length ? ` Instruments: ${s.instruments.join(', ')}` : '';
+                  const style = s.style ? ` Style: ${s.style}` : '';
+                  const genre = s.genre ? ` Genre: ${s.genre}` : '';
+                  const tempo = s.tempo ? ` Tempo: ${s.tempo}` : '';
+                  const key = s.key ? ` Key: ${s.key}` : '';
+                  const desc = s.description ? ` ${s.description}` : '';
+                  const lyricsPart = s.lyrics ? ` Lyrics: ${s.lyrics.replace(/\n/g, ' | ')}` : '';
+                  return `${s.title}:${desc}${lyricsPart}${style}${genre}${chars}${tempo}${key}${inst}`;
+                }).join('\n')
+              : undefined;
             feedback = await openAIService.extractStoryCraftFeedback(
               chapterText,
               chapter.id,
@@ -1275,7 +1450,9 @@ export const AIPanel: React.FC = () => {
               { 
                 themes: themesContext,
                 previousPromises: previousPromises.length > 0 ? previousPromises : undefined,
-                bookSettings: book.settings.bookContext
+                bookSettings: book.settings.bookContext,
+                bookOutline: outlineContentToPlainText(book.outline?.content),
+                songs: songsContext,
               }
             );
           } catch (err) {
@@ -1536,37 +1713,72 @@ export const AIPanel: React.FC = () => {
 
             {activeTab === 'actions' && (
               <>
-                {!activeChapter ? (
+                {!hasDocumentForAI ? (
                   <div className="empty-state">
                     <FileTextIcon />
                     <p className="empty-state-text">
                       Select a chapter to use AI features.
                     </p>
                   </div>
+                ) : isOutlinerActive ? (
+                  <div className="empty-state">
+                    <FileTextIcon />
+                    <p className="empty-state-text">
+                      Use the <strong>Chat</strong> tab to discuss and edit your outline.
+                    </p>
+                    <button
+                      type="button"
+                      className="ai-btn ai-btn-primary"
+                      style={{ marginTop: 12 }}
+                      onClick={() => setAIPanelTab('chat')}
+                    >
+                      Open Chat
+                    </button>
+                  </div>
                 ) : (
                   <>
                     {/* Main Actions */}
                     <div className="ai-section">
                       <div className="ai-section-title">Extract & Analyze</div>
-                      <button 
-                        className="ai-btn ai-btn-primary" 
-                        onClick={handleExtractAll}
-                        disabled={ai.isExtracting}
-                      >
-                        {ai.isExtracting ? (
-                          <>
-                            <div className="spinner" />
-                            <span>{extractionProgress || 'Extracting...'}</span>
-                          </>
-                        ) : (
-                          <>
-                            <ExtractIcon />
-                            <span>Extract All</span>
-                          </>
-                        )}
-                      </button>
+                      <div className="ai-action-row">
+                        <button 
+                          className="ai-btn ai-btn-primary" 
+                          onClick={handleExtractAll}
+                          disabled={ai.isExtracting || ai.storyCraftRunningChapterId === activeChapter?.id}
+                        >
+                          {ai.isExtracting ? (
+                            <>
+                              <div className="spinner" />
+                              <span>{extractionProgress || 'Extracting...'}</span>
+                            </>
+                          ) : (
+                            <>
+                              <ExtractIcon />
+                              <span>Extract All</span>
+                            </>
+                          )}
+                        </button>
+                        <button 
+                          className="ai-btn" 
+                          onClick={handleStoryCraftOnly}
+                          disabled={ai.isExtracting || ai.storyCraftRunningChapterId === activeChapter?.id}
+                          title="Run Story Craft analysis only (scores, checklist, summary, promises)"
+                        >
+                          {ai.storyCraftRunningChapterId === activeChapter?.id ? (
+                            <>
+                              <div className="spinner" />
+                              <span>Assessing story craft...</span>
+                            </>
+                          ) : (
+                            <>
+                              <StoryCraftIcon />
+                              <span>Story Craft</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                       <p className="ai-help-text">
-                        Extracts characters, locations, timeline events, and generates a chapter summary.
+                        Extract All: characters, locations, timeline, summary, Story Craft, and themes. Story Craft: analysis only (scores, checklist, promises).
                       </p>
                     </div>
 

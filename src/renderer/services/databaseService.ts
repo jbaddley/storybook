@@ -3,7 +3,7 @@
  * Communicates with main process via IPC for database operations
  */
 
-import { Book, Chapter, ChapterVariation } from '../../shared/types';
+import { Book, Chapter, ChapterVariation, RevisionPass, ChapterRevisionCompletion } from '../../shared/types';
 
 // Type-safe accessor for electronAPI database methods
 interface DatabaseElectronAPI {
@@ -25,10 +25,14 @@ interface DatabaseElectronAPI {
   dbGetChapterTimestamps: (bookId: string) => Promise<Record<string, string>>;
   dbSyncBookToDatabase: (params: { userId: string; book: Book }) => Promise<unknown>;
   dbLoadBookFromDatabase: (bookId: string) => Promise<Book | null>;
+  dbGetRevisionDataForBook: (bookId: string) => Promise<{ revisionPasses: unknown[]; chapterRevisionCompletions: unknown[] } | null>;
   dbDetectChapterConflicts: (params: { bookId: string; localChapters: Chapter[] }) => Promise<ChapterConflict[]>;
   dbGetVariationsForChapter: (chapterId: string) => Promise<ChapterVariation[]>;
   dbAddChapterVariation: (chapterId: string, variation: ChapterVariation) => Promise<void>;
   dbDeleteChapterVariation: (variationId: string) => Promise<void>;
+  dbCreateRevisionPass: (params: { bookId: string; title: string; date: string }) => Promise<RevisionPass>;
+  dbSetChapterCompletedForRevision: (params: { chapterId: string; revisionId: string }) => Promise<void>;
+  dbUnsetChapterCompletedForRevision: (params: { chapterId: string; revisionId: string }) => Promise<void>;
 }
 
 // Get the database-specific methods from electronAPI
@@ -264,6 +268,25 @@ class DatabaseService {
   }
 
   /**
+   * Load only revision passes and completions for a book (e.g. after loading from file).
+   */
+  async getRevisionDataForBook(bookId: string): Promise<{
+    revisionPasses: RevisionPass[];
+    chapterRevisionCompletions: ChapterRevisionCompletion[];
+  } | null> {
+    try {
+      const result = await getDbApi().dbGetRevisionDataForBook(bookId);
+      return {
+        revisionPasses: (result?.revisionPasses ?? []) as RevisionPass[],
+        chapterRevisionCompletions: (result?.chapterRevisionCompletions ?? []) as ChapterRevisionCompletion[],
+      };
+    } catch (error) {
+      console.error('[DatabaseService] getRevisionDataForBook failed:', error);
+      return null;
+    }
+  }
+
+  /**
    * Detect conflicts between DB and local chapters
    */
   async detectChapterConflicts(
@@ -340,6 +363,60 @@ class DatabaseService {
       return true;
     } catch (error) {
       console.error('[DatabaseService] deleteChapterVariation failed:', error);
+      return false;
+    }
+  }
+
+  // ============================================
+  // Revision Pass Operations
+  // ============================================
+
+  /**
+   * Create a new revision pass for a book.
+   * Returns { pass } on success, or { pass: null, error } on failure (e.g. BOOK_NOT_FOUND, or DB error message).
+   */
+  async createRevisionPass(
+    bookId: string,
+    params: { title: string; date: string }
+  ): Promise<{ pass: RevisionPass | null; error?: string }> {
+    try {
+      const result = await getDbApi().dbCreateRevisionPass({
+        bookId,
+        title: params.title,
+        date: params.date,
+      });
+      return { pass: result as RevisionPass };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to create revision pass';
+      console.error('[DatabaseService] createRevisionPass failed:', message);
+      // Normalize so callers can check result.error === 'BOOK_NOT_FOUND' (Electron may wrap the message)
+      const normalized = message.includes('BOOK_NOT_FOUND') ? 'BOOK_NOT_FOUND' : message;
+      return { pass: null, error: normalized };
+    }
+  }
+
+  /**
+   * Mark a chapter as done for a revision pass
+   */
+  async setChapterCompletedForRevision(chapterId: string, revisionId: string): Promise<boolean> {
+    try {
+      await getDbApi().dbSetChapterCompletedForRevision({ chapterId, revisionId });
+      return true;
+    } catch (error) {
+      console.error('[DatabaseService] setChapterCompletedForRevision failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Unmark a chapter as done for a revision pass
+   */
+  async unsetChapterCompletedForRevision(chapterId: string, revisionId: string): Promise<boolean> {
+    try {
+      await getDbApi().dbUnsetChapterCompletedForRevision({ chapterId, revisionId });
+      return true;
+    } catch (error) {
+      console.error('[DatabaseService] unsetChapterCompletedForRevision failed:', error);
       return false;
     }
   }

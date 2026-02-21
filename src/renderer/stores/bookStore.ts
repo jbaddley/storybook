@@ -8,6 +8,7 @@ import {
   DocumentTab,
   Character,
   Location,
+  Song,
   TimelineEvent,
   AISuggestion, 
   ChapterSummary, 
@@ -28,6 +29,7 @@ import {
   TipTapContent,
   DEFAULT_TIPTAP_CONTENT
 } from '../../shared/types';
+import { databaseService } from '../services/databaseService';
 
 interface SyncStatus {
   isSyncing: boolean;
@@ -81,6 +83,8 @@ interface BookState {
   activeChapterId: string | null;
   /** In-dialog pending variation draft (not yet added to chapter.variations) */
   pendingChapterVariation: Record<string, ChapterVariation>;
+  /** Selected revision pass for "mark chapter done" (null = none selected) */
+  currentRevisionPassId: string | null;
   ui: UIState;
   ai: AIState;
   
@@ -101,6 +105,8 @@ interface BookState {
   updateChapterContent: (chapterId: string, content: TipTapContent) => void;
   reorderChapters: (sourceIndex: number, destinationIndex: number) => void;
   renumberChapters: () => void;
+  /** Create chapters from outline items (e.g. from AI). Appends to existing chapters; each gets a summary with the description. */
+  createChaptersFromOutline: (items: { title: string; description: string }[]) => void;
   
   // Comment actions
   addComment: (chapterId: string, comment: ChapterComment) => void;
@@ -153,6 +159,7 @@ interface BookState {
   deleteDocumentTab: (tabId: string) => void;
   updateDocumentTab: (tabId: string, updates: Partial<DocumentTab>) => void;
   updateDocumentTabContent: (tabId: string, content: TipTapContent) => void;
+  updateBookOutline: (content: string) => void;
   
   // Extraction actions (with merging)
   addOrUpdateCharacter: (character: Omit<Character, 'id'>, chapterId: string, chapterTitle: string) => void;
@@ -166,6 +173,9 @@ interface BookState {
   deleteCharacter: (id: string) => void;
   updateLocation: (id: string, updates: Partial<Omit<Location, 'id'>>) => void;
   deleteLocation: (id: string) => void;
+  addSong: (song: Omit<Song, 'id'>) => void;
+  updateSong: (id: string, updates: Partial<Omit<Song, 'id'>>) => void;
+  deleteSong: (id: string) => void;
   updateTimelineEvent: (id: string, updates: Partial<Omit<TimelineEvent, 'id'>>) => void;
   deleteTimelineEvent: (id: string) => void;
   updateSummary: (chapterId: string, updates: { summary?: string; keyPoints?: string[] }) => void;
@@ -209,6 +219,12 @@ interface BookState {
   restoreOriginal: (chapterId: string) => void;
   clearOriginal: (chapterId: string) => void;
   hasOriginal: (chapterId: string) => boolean;
+  
+  // Revision pass actions
+  setCurrentRevisionPass: (revisionId: string | null) => void;
+  createRevisionPass: (params: { title: string; date: string }) => Promise<{ ok: boolean; error?: string }>;
+  markChapterDoneForRevision: (chapterId: string, revisionId: string) => Promise<boolean>;
+  unmarkChapterDoneForRevision: (chapterId: string, revisionId: string) => Promise<boolean>;
   
   // Computed
   getActiveChapter: () => Chapter | undefined;
@@ -260,6 +276,7 @@ export const useBookStore = create<BookState>((set, get) => ({
   book: initialBook,
   activeChapterId: initialBook.chapters[0]?.id || null,
   pendingChapterVariation: {},
+  currentRevisionPassId: null,
   ui: {
     showChaptersPanel: true,
     showAIPanel: true,
@@ -307,7 +324,10 @@ export const useBookStore = create<BookState>((set, get) => ({
       { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' as const },
       { id: 'summaries-tab', title: 'Summaries', icon: '📝', tabType: 'summaries' as const },
       { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' as const },
+      { id: 'outliner-tab', title: 'Outliner', icon: '📋', tabType: 'outliner' as const },
       { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' as const },
+      { id: 'plotanalysis-tab', title: 'Plot Analysis', icon: '🔍', tabType: 'plotanalysis' as const },
+      { id: 'songs-tab', title: 'Songs', icon: '🎵', tabType: 'songs' as const },
     ];
     
     const existingTabs = book.documentTabs || [];
@@ -338,6 +358,22 @@ export const useBookStore = create<BookState>((set, get) => ({
       },
       plotErrorAnalysis: book.extracted.plotErrorAnalysis || undefined,
     };
+
+    // Ensure revision data exists
+    const revisionPasses = book.revisionPasses ?? [];
+    const chapterRevisionCompletions = book.chapterRevisionCompletions ?? [];
+    const normalizedBook = {
+      ...book,
+      documentTabs: updatedDocumentTabs,
+      extracted: updatedExtracted,
+      revisionPasses,
+      chapterRevisionCompletions,
+      songs: book.songs ?? [],
+    };
+    const latestPass = revisionPasses.length > 0
+      ? revisionPasses.reduce((a, b) => (a.revisionNumber >= b.revisionNumber ? a : b))
+      : null;
+    const currentRevisionPassId = latestPass?.id ?? null;
     
     const lastChapterMap = getLastChapterByBook();
     const lastChapterId = book.id ? lastChapterMap[book.id] : undefined;
@@ -345,12 +381,9 @@ export const useBookStore = create<BookState>((set, get) => ({
     const activeChapterId = hasChapter ? lastChapterId! : (book.chapters[0]?.id || null);
 
     set({
-      book: {
-        ...book,
-        documentTabs: updatedDocumentTabs,
-        extracted: updatedExtracted,
-      },
+      book: normalizedBook,
       activeChapterId,
+      currentRevisionPassId,
       ui: { ...get().ui, isDirty: false }
     });
   },
@@ -371,6 +404,7 @@ export const useBookStore = create<BookState>((set, get) => ({
     set({ 
       book, 
       activeChapterId: book.chapters[0]?.id || null,
+      currentRevisionPassId: null,
       ui: { ...get().ui, isDirty: false, currentFilePath: null }
     });
   },
@@ -646,6 +680,43 @@ export const useBookStore = create<BookState>((set, get) => ({
           updatedAt: new Date().toISOString(),
         },
         ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+
+  createChaptersFromOutline: (items) => {
+    if (!items.length) return;
+    set((state) => {
+      const startOrder = state.book.chapters.length + 1;
+      const now = new Date().toISOString();
+      const newChapters: Chapter[] = items.map((item, i) => ({
+        ...createNewChapter(startOrder + i),
+        title: item.title,
+        updatedAt: now,
+      }));
+      const summaries: ChapterSummary[] = items.map((item, i) => ({
+        chapterId: newChapters[i].id,
+        summary: item.description,
+        keyPoints: [],
+        generatedAt: now,
+      }));
+      const newSummaries = new Map(state.ai.summaries);
+      summaries.forEach((s) => newSummaries.set(s.chapterId, s));
+      const existingExtracted = state.book.extracted.summaries || [];
+      const newExtractedSummaries = [...existingExtracted, ...summaries];
+      return {
+        book: {
+          ...state.book,
+          chapters: [...state.book.chapters, ...newChapters],
+          extracted: {
+            ...state.book.extracted,
+            summaries: newExtractedSummaries,
+          },
+          updatedAt: now,
+        },
+        ai: { ...state.ai, summaries: newSummaries },
+        activeChapterId: newChapters[0]?.id ?? state.activeChapterId,
+        ui: { ...state.ui, isDirty: true },
       };
     });
   },
@@ -1069,6 +1140,19 @@ export const useBookStore = create<BookState>((set, get) => ({
     }));
   },
 
+  updateBookOutline: (content) => {
+    set((state) => {
+      const now = new Date().toISOString();
+      const outline = state.book.outline
+        ? { ...state.book.outline, content, updatedAt: now }
+        : { id: `outline-${state.book.id}`, bookId: state.book.id, content, updatedAt: now };
+      return {
+        book: { ...state.book, outline, updatedAt: now },
+        ui: { ...state.ui, isDirty: true },
+      };
+    });
+  },
+
   // Extraction actions with merging
   addOrUpdateCharacter: (character, chapterId, chapterTitle) => {
     set((state) => {
@@ -1388,6 +1472,57 @@ export const useBookStore = create<BookState>((set, get) => ({
           ...state.book.extracted,
           locations: state.book.extracted.locations.filter(l => l.id !== id),
         },
+        updatedAt: new Date().toISOString(),
+      },
+      ui: { ...state.ui, isDirty: true }
+    }));
+  },
+
+  addSong: (song) => {
+    set((state) => {
+      const songs = state.book.songs ?? [];
+      const newSong: Song = {
+        id: generateId(),
+        title: song.title,
+        description: song.description,
+        lyrics: song.lyrics,
+        style: song.style ?? '',
+        genre: song.genre ?? '',
+        characters: song.characters ?? [],
+        tempo: song.tempo ?? '',
+        key: song.key ?? '',
+        instruments: song.instruments ?? [],
+      };
+      return {
+        book: {
+          ...state.book,
+          songs: [...songs, newSong],
+          updatedAt: new Date().toISOString(),
+        },
+        ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+
+  updateSong: (id, updates) => {
+    set((state) => {
+      const songs = state.book.songs ?? [];
+      return {
+        book: {
+          ...state.book,
+          songs: songs.map(s => s.id === id ? { ...s, ...updates } : s),
+          updatedAt: new Date().toISOString(),
+        },
+        ui: { ...state.ui, isDirty: true }
+      };
+    });
+  },
+
+  deleteSong: (id) => {
+    set((state) => ({
+      book: {
+        ...state.book,
+        songs: (state.book.songs ?? []).filter(s => s.id !== id),
         updatedAt: new Date().toISOString(),
       },
       ui: { ...state.ui, isDirty: true }
@@ -2021,6 +2156,61 @@ export const useBookStore = create<BookState>((set, get) => ({
 
   getChapterVariation: (chapterId) => {
     return get().pendingChapterVariation[chapterId];
+  },
+
+  setCurrentRevisionPass: (revisionId) => {
+    set({ currentRevisionPassId: revisionId });
+  },
+
+  createRevisionPass: async (params) => {
+    const { book } = get();
+    if (!book.id) return { ok: false, error: 'No book loaded.' };
+    const result = await databaseService.createRevisionPass(book.id, params);
+    if (result.error || !result.pass) {
+      return { ok: false, error: result.error ?? 'Could not create revision pass.' };
+    }
+    const pass = result.pass;
+    set((state) => ({
+      book: {
+        ...state.book,
+        revisionPasses: [...(state.book.revisionPasses || []), pass],
+      },
+      currentRevisionPassId: pass.id,
+    }));
+    return { ok: true };
+  },
+
+  markChapterDoneForRevision: async (chapterId, revisionId) => {
+    const ok = await databaseService.setChapterCompletedForRevision(chapterId, revisionId);
+    if (!ok) return false;
+    const { book } = get();
+    const completedAt = new Date().toISOString();
+    set((state) => ({
+      book: {
+        ...state.book,
+        chapterRevisionCompletions: [
+          ...(state.book.chapterRevisionCompletions || []).filter(
+            (c) => !(c.chapterId === chapterId && c.revisionId === revisionId)
+          ),
+          { id: `local-${chapterId}-${revisionId}`, chapterId, revisionId, completedAt },
+        ],
+      },
+    }));
+    return true;
+  },
+
+  unmarkChapterDoneForRevision: async (chapterId, revisionId) => {
+    const ok = await databaseService.unsetChapterCompletedForRevision(chapterId, revisionId);
+    if (!ok) return false;
+    set((state) => ({
+      book: {
+        ...state.book,
+        chapterRevisionCompletions: (state.book.chapterRevisionCompletions || []).filter(
+          (c) => !(c.chapterId === chapterId && c.revisionId === revisionId)
+        ),
+      },
+    }));
+    return true;
   },
 
   // Computed

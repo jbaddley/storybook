@@ -5,6 +5,9 @@ import { TipTapContent } from '../../shared/types';
 import { ChapterVariationDialog } from './ChapterVariationDialog';
 import { ChapterDetailsDialog } from './ChapterDetailsDialog';
 import { AudioExportDialog } from './AudioExportDialog';
+import { getLatestRevisionPassForChapter, isChapterDoneForRevision } from '../utils/revisionUtils';
+import { dbSyncService } from '../services/dbSyncService';
+import { googleAuthService } from '../services/googleAuthService';
 
 function extractTextFromContent(content: TipTapContent | undefined): string {
   if (!content?.content) return '';
@@ -125,6 +128,173 @@ const MenuIcon = () => (
   </svg>
 );
 
+/** Revisions: current pass selector + new pass button */
+function RevisionsSection() {
+  const {
+    book,
+    currentRevisionPassId,
+    setCurrentRevisionPass,
+    createRevisionPass,
+  } = useBookStore();
+  const [showNewPassForm, setShowNewPassForm] = useState(false);
+  const [newPassTitle, setNewPassTitle] = useState('Pass');
+  const [newPassSubmitting, setNewPassSubmitting] = useState(false);
+  const [newPassError, setNewPassError] = useState<string | null>(null);
+  const passes = book.revisionPasses ?? [];
+  const currentPass = passes.find((p) => p.id === currentRevisionPassId);
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const handleNewPassSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const title = newPassTitle.trim();
+    if (!title) return;
+    setNewPassError(null);
+    setNewPassSubmitting(true);
+    try {
+      let result = await createRevisionPass({ title, date: today });
+      if (result.ok) {
+        setShowNewPassForm(false);
+        setNewPassTitle('Pass');
+        return;
+      }
+      if (result.error === 'BOOK_NOT_FOUND') {
+        const userId = dbSyncService.getCurrentUserId() ?? await googleAuthService.ensureDbUserId();
+        if (userId) {
+          const syncResult = await dbSyncService.syncBook(book);
+          if (syncResult.success) {
+            result = await createRevisionPass({ title, date: today });
+            if (result.ok) {
+              setShowNewPassForm(false);
+              setNewPassTitle('Pass');
+              return;
+            }
+          }
+        }
+      }
+      setNewPassError(
+        result.error === 'BOOK_NOT_FOUND'
+          ? 'Save the file first (⌘S), or sign in and save to sync this book to the database.'
+          : result.error ?? 'Could not create revision pass.'
+      );
+    } finally {
+      setNewPassSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="revisions-section" style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+        Revision pass
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <select
+          value={currentRevisionPassId ?? ''}
+          onChange={(e) => setCurrentRevisionPass(e.target.value || null)}
+          title="Current pass (for marking chapters done)"
+          style={{
+            fontSize: 12,
+            padding: '4px 8px',
+            minWidth: 120,
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            color: 'var(--text-primary)',
+          }}
+        >
+          <option value="">— None —</option>
+          {passes.map((p) => (
+            <option key={p.id} value={p.id}>
+              Pass {p.revisionNumber}: {p.title}
+            </option>
+          ))}
+        </select>
+        {!showNewPassForm ? (
+          <button
+            type="button"
+            onClick={() => { setShowNewPassForm(true); setNewPassError(null); }}
+            title="Create a new revision pass"
+            style={{
+              fontSize: 12,
+              padding: '4px 8px',
+              background: 'var(--accent-primary)',
+              color: 'var(--text-on-accent)',
+              border: 'none',
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
+          >
+            New pass
+          </button>
+        ) : (
+          <form
+            onSubmit={handleNewPassSubmit}
+            style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              type="text"
+              value={newPassTitle}
+              onChange={(e) => setNewPassTitle(e.target.value)}
+              placeholder="Pass title"
+              autoFocus
+              style={{
+                fontSize: 12,
+                padding: '4px 8px',
+                width: 120,
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                color: 'var(--text-primary)',
+              }}
+            />
+            <button
+              type="submit"
+              disabled={newPassSubmitting || !newPassTitle.trim()}
+              style={{
+                fontSize: 12,
+                padding: '4px 8px',
+                background: 'var(--accent-primary)',
+                color: 'var(--text-on-accent)',
+                border: 'none',
+                borderRadius: 4,
+                cursor: newPassSubmitting ? 'wait' : 'pointer',
+              }}
+            >
+              {newPassSubmitting ? 'Creating…' : 'Create'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowNewPassForm(false); setNewPassTitle('Pass'); }}
+              style={{
+                fontSize: 12,
+                padding: '4px 8px',
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </form>
+        )}
+      </div>
+      {newPassError && (
+        <div style={{ fontSize: 11, color: 'var(--accent-error)', marginTop: 4 }} role="alert">
+          {newPassError}
+        </div>
+      )}
+      {currentPass && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+          Mark chapters as done for: Pass {currentPass.revisionNumber} – {currentPass.title}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Header actions: Add Chapter + Renumber only */
 export const ChapterListHeaderActions: React.FC = () => {
   const [open, setOpen] = useState(false);
@@ -214,12 +384,25 @@ function ChapterRowActions({
     }
   }, [open]);
 
+  // Load last exported path when dropdown opens
   useEffect(() => {
     if (!open || !bookId || !chapter.id || typeof window.electronAPI?.storeGet !== 'function') return;
     window.electronAPI.storeGet(AUDIO_EXPORT_PATH_KEY(bookId, chapter.id)).then((value) => {
       setLastExportedAudioPath(typeof value === 'string' ? value : null);
     });
   }, [open, bookId, chapter.id]);
+
+  // When user saves from the export toast, enable "Play exported audio" without reopening the menu
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { bookId: savedBookId, chapterId: savedChapterId, filePath } = (e as CustomEvent).detail ?? {};
+      if (savedBookId === bookId && savedChapterId === chapter.id && typeof filePath === 'string') {
+        setLastExportedAudioPath(filePath);
+      }
+    };
+    window.addEventListener('audio-export-saved', handler);
+    return () => window.removeEventListener('audio-export-saved', handler);
+  }, [bookId, chapter.id]);
 
   const runAndClose = (fn: () => void) => {
     fn();
@@ -353,6 +536,7 @@ export const ChapterList: React.FC = () => {
     book, 
     activeChapterId, 
     ui,
+    currentRevisionPassId,
     setActiveChapter, 
     setActiveDocumentTab,
     addChapter,
@@ -366,8 +550,12 @@ export const ChapterList: React.FC = () => {
     applyVariation,
     discardVariation,
     restoreOriginal,
-    clearOriginal
+    clearOriginal,
+    markChapterDoneForRevision,
+    unmarkChapterDoneForRevision,
   } = useBookStore();
+  const revisionPasses = book.revisionPasses ?? [];
+  const chapterRevisionCompletions = book.chapterRevisionCompletions ?? [];
   
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [variationDialogChapterId, setVariationDialogChapterId] = useState<string | null>(null);
@@ -442,6 +630,7 @@ export const ChapterList: React.FC = () => {
     <>
       <div className="chapters-panel">
         <div className="chapters-panel-scroll">
+          <RevisionsSection />
           <div className="text-muted" style={{ fontSize: '11px', marginBottom: '8px' }}>
             {chapters.length} chapters
           </div>
@@ -493,6 +682,71 @@ export const ChapterList: React.FC = () => {
                         );
                       })()}
                     </span>
+                    {currentRevisionPassId ? (
+                      <span className="chapter-item-slot" title="Click to toggle: mark done or mark as needing re-review">
+                        <button
+                          type="button"
+                          className="chapter-revision-done-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            const done = isChapterDoneForRevision(
+                              chapter.id,
+                              currentRevisionPassId,
+                              chapterRevisionCompletions
+                            );
+                            if (done) unmarkChapterDoneForRevision(chapter.id, currentRevisionPassId);
+                            else markChapterDoneForRevision(chapter.id, currentRevisionPassId);
+                          }}
+                          title={
+                            isChapterDoneForRevision(
+                              chapter.id,
+                              currentRevisionPassId,
+                              chapterRevisionCompletions
+                            )
+                              ? 'Done for this pass — click to mark as needing re-review'
+                              : 'Not done — click to mark as done for this pass'
+                          }
+                          style={{
+                            minWidth: 28,
+                            background: 'none',
+                            border: 'none',
+                            padding: '2px 4px',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 11,
+                            color: 'var(--text-muted)',
+                          }}
+                        >
+                          {isChapterDoneForRevision(
+                            chapter.id,
+                            currentRevisionPassId,
+                            chapterRevisionCompletions
+                          ) ? (
+                            <CheckIcon />
+                          ) : (
+                            '—'
+                          )}
+                        </button>
+                      </span>
+                    ) : (
+                      <span
+                        className="chapter-item-slot"
+                        title="Latest revision pass this chapter has passed"
+                        style={{ minWidth: 28, fontSize: 11, color: 'var(--text-muted)' }}
+                      >
+                        {(() => {
+                          const latest = getLatestRevisionPassForChapter(
+                            chapter.id,
+                            revisionPasses,
+                            chapterRevisionCompletions
+                          );
+                          return latest ? `Pass ${latest.revisionNumber}` : '—';
+                        })()}
+                      </span>
+                    )}
                     <span className="chapter-item-slot chapter-item-slot-actions">
                       <ChapterRowActions
                         chapter={chapter}
@@ -561,6 +815,7 @@ export const ChapterList: React.FC = () => {
           if (detailsDialogChapterId) updateChapter(detailsDialogChapterId, updates);
           setDetailsDialogChapterId(null);
         }}
+        chapterId={detailsDialogChapterId ?? undefined}
       />
       <AudioExportDialog
         isOpen={audioExportChapterId !== null}

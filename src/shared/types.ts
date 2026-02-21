@@ -31,6 +31,31 @@ export interface Toast {
   };
 }
 
+/** Revision pass: per-book pass (e.g. Pass 1, Pass 2) with title and date */
+export interface RevisionPass {
+  id: string;
+  bookId: string;
+  revisionNumber: number;
+  title: string;
+  date: string; // ISO
+}
+
+/** Chapter marked as done for a specific revision pass */
+export interface ChapterRevisionCompletion {
+  id: string;
+  chapterId: string;
+  revisionId: string;
+  completedAt?: string; // ISO, optional
+}
+
+/** Book outline document (Markdown), one per book */
+export interface BookOutline {
+  id: string;
+  bookId: string;
+  content: string;
+  updatedAt: string;
+}
+
 export interface Book {
   id: string;
   title: string;
@@ -38,9 +63,13 @@ export interface Book {
   description: string;
   chapters: Chapter[];
   documentTabs: DocumentTab[];
+  outline?: BookOutline | null;
   metadata: BookMetadata;
   settings: BookSettings;
   extracted: ExtractedData;
+  revisionPasses: RevisionPass[];
+  chapterRevisionCompletions: ChapterRevisionCompletion[];
+  songs: Song[];
   createdAt: string;
   updatedAt: string;
 }
@@ -53,7 +82,7 @@ export interface DocumentTab {
   icon?: string;
   color?: string;
   isPermanent: boolean; // true for Characters, Locations, Timeline, Summaries, StoryCraft, Themes
-  tabType: 'custom' | 'characters' | 'locations' | 'timeline' | 'summaries' | 'storycraft' | 'themes' | 'plotanalysis';
+  tabType: 'custom' | 'characters' | 'locations' | 'timeline' | 'summaries' | 'storycraft' | 'themes' | 'plotanalysis' | 'outliner' | 'songs';
   createdAt: string;
   updatedAt: string;
 }
@@ -460,6 +489,20 @@ export interface Location {
   mentions: ChapterMention[];
 }
 
+/** User-created song reference for the book (title, description, lyrics, style, genre, characters, tempo, key, instruments) */
+export interface Song {
+  id: string;
+  title: string;
+  description?: string;
+  lyrics?: string;
+  style: string;
+  genre: string;
+  characters: string[];
+  tempo: string;
+  key: string;
+  instruments: string[];
+}
+
 export interface TimelineEvent {
   id: string;
   description: string;
@@ -510,6 +553,8 @@ export interface SBKManifest {
   chapterOrder: string[]; // array of chapter IDs
   createdAt: string;
   updatedAt: string;
+  /** When set, this file is linked to this database book id; save will update that row instead of creating a new one */
+  bookId?: string;
 }
 
 // IPC Channel types
@@ -636,6 +681,16 @@ export function createDefaultDocumentTabs(): DocumentTab[] {
       updatedAt: now,
     },
     {
+      id: 'outliner-tab',
+      title: 'Outliner',
+      content: DEFAULT_TIPTAP_CONTENT,
+      icon: '📋',
+      isPermanent: true,
+      tabType: 'outliner',
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
       id: 'themes-tab',
       title: 'Themes & Motifs',
       content: DEFAULT_TIPTAP_CONTENT,
@@ -652,6 +707,16 @@ export function createDefaultDocumentTabs(): DocumentTab[] {
       icon: '🔍',
       isPermanent: true,
       tabType: 'plotanalysis',
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: 'songs-tab',
+      title: 'Songs',
+      content: DEFAULT_TIPTAP_CONTENT,
+      icon: '🎵',
+      isPermanent: true,
+      tabType: 'songs',
       createdAt: now,
       updatedAt: now,
     },
@@ -680,11 +745,15 @@ export function createNewBook(): Book {
     description: '',
     chapters: [createNewChapter(1)],
     documentTabs: createDefaultDocumentTabs(),
+    outline: null,
     metadata: {
       language: 'en',
       keywords: [],
     },
     settings: DEFAULT_BOOK_SETTINGS,
+    revisionPasses: [],
+    chapterRevisionCompletions: [],
+    songs: [],
     extracted: {
       characters: [],
       locations: [],

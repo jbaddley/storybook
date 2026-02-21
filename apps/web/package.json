@@ -1,0 +1,33 @@
+{
+  "name": "storybook-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 4050",
+    "build": "prisma generate --schema=../../prisma/schema.prisma && next build",
+    "start": "next start -p 4050",
+    "lint": "next lint",
+    "postinstall": "prisma generate --schema=../../prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@auth/prisma-adapter": "^2.7.4",
+    "@prisma/client": "^5.22.0",
+    "@tiptap/core": "^2.1.13",
+    "@tiptap/extension-text-style": "^2.27.1",
+    "@tiptap/extension-underline": "^2.27.1",
+    "@tiptap/pm": "^2.1.13",
+    "@tiptap/react": "^2.1.13",
+    "@tiptap/starter-kit": "^2.1.13",
+    "next": "14.2.18",
+    "next-auth": "^4.24.10",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "prisma": "^5.22.0",
+    "typescript": "^5.3.3"
+  }
+}

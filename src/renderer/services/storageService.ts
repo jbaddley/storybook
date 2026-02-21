@@ -42,6 +42,7 @@ function migrateBookData(book: Book): Book {
     { id: 'timeline-tab', title: 'Timeline', icon: '📅', tabType: 'timeline' },
     { id: 'summaries-tab', title: 'Summaries', icon: '📝', tabType: 'summaries' },
     { id: 'storycraft-tab', title: 'Story Craft', icon: '🎭', tabType: 'storycraft' },
+    { id: 'outliner-tab', title: 'Outliner', icon: '📋', tabType: 'outliner' },
     { id: 'themes-tab', title: 'Themes & Motifs', icon: '🎨', tabType: 'themes' },
   ];
   
