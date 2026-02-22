@@ -1,5 +1,5 @@
 {
-  "buildCommand": "node scripts/generate-web-schema.js && PRISMA_GENERATE_SKIP_AUTOINSTALL=1 prisma generate --schema=../../prisma/schema.web.prisma && next build",
+  "buildCommand": "node scripts/generate-web-schema.js && NODE_PATH=./node_modules PRISMA_GENERATE_SKIP_AUTOINSTALL=1 prisma generate --schema=../../prisma/schema.web.prisma && next build",
   "installCommand": "npm install",
   "framework": "nextjs",
   "regions": ["iad1"]
