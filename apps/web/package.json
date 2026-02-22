@@ -2,7 +2,9 @@
   "name": "storybook-web",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": ">=18.x" },
+  "engines": {
+    "node": ">=18.x"
+  },
   "scripts": {
     "dev": "ulimit -n 65536 2>/dev/null || true && CHOKIDAR_USEPOLLING=1 next dev -p 4050",
     "build": "prisma generate --schema=../../prisma/schema.prisma && next build",
@@ -26,13 +28,13 @@
     "next": "14.2.18",
     "next-auth": "^4.24.10",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "prisma": "^5.22.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
-    "prisma": "^5.22.0",
     "typescript": "^5.3.3"
   }
 }

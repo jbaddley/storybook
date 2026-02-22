@@ -1,5 +1,5 @@
 {
-  "buildCommand": "PRISMA_GENERATE_SKIP_AUTOINSTALL=1 prisma generate --schema=../../prisma/schema.prisma && next build",
+  "buildCommand": "prisma generate --schema=../../prisma/schema.prisma && next build",
   "installCommand": "npm install",
   "framework": "nextjs",
   "regions": ["iad1"]
