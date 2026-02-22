@@ -61,5 +61,5 @@ Or use your host’s CLI/UI to run `prisma migrate deploy` with the production `
 ## Quick reference
 
 - **Root Directory**: `apps/web`
-- **Build**: `prisma generate --schema=../../prisma/schema.prisma && next build` (default in this app)
+- **Build**: `PRISMA_GENERATE_SKIP_AUTOINSTALL=1 prisma generate --schema=../../prisma/schema.prisma && next build` (in `vercel.json`; the env var prevents Prisma from running `npm i prisma` during generate, which fails on Vercel)
 - **Required env**: `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL`
