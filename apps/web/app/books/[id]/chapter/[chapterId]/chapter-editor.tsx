@@ -53,7 +53,10 @@ function sanitizeContent(doc: DocContent): DocContent {
     const n = node as { type?: string; content?: unknown[]; marks?: Array<{ type: string }> };
     const out: Record<string, unknown> = { ...n };
     if (Array.isArray(n.marks) && n.marks.length > 0) {
-      const allowed = n.marks.filter((m) => m && typeof m === 'object' && ALLOWED_MARKS.has((m as { type?: string }).type));
+      const allowed = n.marks.filter((m) => {
+        const t = m && typeof m === 'object' ? (m as { type?: string }).type : undefined;
+        return typeof t === 'string' && ALLOWED_MARKS.has(t);
+      });
       out.marks = allowed.length ? allowed : undefined;
     }
     if (Array.isArray(n.content)) {
