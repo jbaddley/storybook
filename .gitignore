@@ -12,3 +12,6 @@ release/
 
 # PDF test output (plan: scripts/output/)
 scripts/output/*.pdf
+
+# Web-only Prisma schema (generated at Vercel build from schema.prisma)
+prisma/schema.web.prisma

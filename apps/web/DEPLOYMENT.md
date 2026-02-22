@@ -61,5 +61,5 @@ Or use your host’s CLI/UI to run `prisma migrate deploy` with the production `
 ## Quick reference
 
 - **Root Directory**: `apps/web`
-- **Build**: `prisma generate --schema=../../prisma/schema.prisma && next build`. `prisma` is in `dependencies` (not devDependencies) so it is installed before generate and Prisma does not run a second `npm i prisma` during generate.
+- **Build**: `node scripts/generate-web-schema.js && PRISMA_GENERATE_SKIP_AUTOINSTALL=1 prisma generate --schema=../../prisma/schema.web.prisma && next build`. The script writes `prisma/schema.web.prisma` (web-only generator) so generate does not run the default generator and does not trigger Prisma’s internal `npm i prisma` (which fails on Vercel).
 - **Required env**: `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL`
