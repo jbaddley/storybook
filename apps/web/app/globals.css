@@ -168,23 +168,25 @@ a {
   border-color: #999;
 }
 .chapter-editor-wrapper {
-  flex: 1 1 0;
+  align-self: flex-start;
+  width: 100%;
   min-height: 100%;
   border: 1px solid #ccc;
   border-radius: 4px;
   padding: 0.75rem 1rem;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
 }
 .chapter-editor-wrapper > div {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 .chapter-editor-wrapper .chapter-editor-prose,
 .chapter-editor-wrapper .ProseMirror {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   white-space: pre-wrap; /* preserve tabs and spaces */
 }

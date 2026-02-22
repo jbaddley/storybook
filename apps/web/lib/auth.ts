@@ -2,6 +2,11 @@ import type { NextAuthOptions } from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
 import { prisma } from './prisma';
 
+// Avoid "Invalid URL" during Next.js static generation when NEXTAUTH_URL is unset (e.g. Vercel build).
+if (typeof process !== 'undefined' && (process.env.NEXTAUTH_URL == null || process.env.NEXTAUTH_URL === '')) {
+  process.env.NEXTAUTH_URL = 'https://placeholder.vercel.app';
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
