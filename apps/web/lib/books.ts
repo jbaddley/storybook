@@ -41,6 +41,7 @@ export async function getChapter(chapterId: string, userId: string) {
       bookId: true,
       title: true,
       content: true,
+      originalContent: true,
       order: true,
       wordCount: true,
       updatedAt: true,

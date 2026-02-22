@@ -3,6 +3,7 @@ import { useBookStore } from '../stores/bookStore';
 import { fileService } from '../services/fileService';
 import { databaseService } from '../services/databaseService';
 import { exportService } from '../services/exportService';
+import { flushActiveEditorToStore } from '../utils/flushEditorToStore';
 
 // Check if running in Electron
 const isElectron = () => typeof window !== 'undefined' && window.electronAPI !== undefined;
@@ -61,10 +62,14 @@ export function useFileOperations() {
 
   // Define handleSave first since handleNew depends on it
   const handleSave = useCallback(async (): Promise<boolean> => {
+    // Flush active chapter editor into store so we save the latest content
+    flushActiveEditorToStore();
+    const bookToSave = useBookStore.getState().book;
+
     if (!isElectron()) {
       // In browser mode, save to localStorage as a demo
       try {
-        const data = await fileService.saveBook(book);
+        const data = await fileService.saveBook(bookToSave);
         localStorage.setItem('storybook-autosave', data);
         setDirty(false);
         console.log('Saved to localStorage');
@@ -76,7 +81,7 @@ export function useFileOperations() {
     }
     
     try {
-      const data = await fileService.saveBook(book);
+      const data = await fileService.saveBook(bookToSave);
       const filePath = await window.electronAPI.saveFile(data, ui.currentFilePath || undefined);
       
       if (filePath) {
@@ -93,7 +98,7 @@ export function useFileOperations() {
       alert('Failed to save file.');
       return false;
     }
-  }, [book, ui.currentFilePath, setCurrentFilePath, setDirty]);
+  }, [ui.currentFilePath, setCurrentFilePath, setDirty]);
 
   const handleNew = useCallback(async () => {
     if (ui.isDirty) {

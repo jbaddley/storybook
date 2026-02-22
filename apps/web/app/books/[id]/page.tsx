@@ -16,6 +16,13 @@ export default async function BookDetailPage({
   const book = await getBookWithChapters(bookId, session.user.id);
   if (!book) notFound();
 
+  const chapterDisplayTitle = (order: number, title: string) => {
+    const prefix = `Chapter ${order} — `;
+    const altPrefix = `Chapter ${order} - `;
+    if (title.startsWith(prefix) || title.startsWith(altPrefix)) return title;
+    return `${prefix}${title}`;
+  };
+
   return (
     <main style={{ padding: '2rem', maxWidth: 720, margin: '0 auto' }}>
       <Link href="/books" style={{ display: 'inline-block', marginBottom: '1rem' }}>
@@ -31,7 +38,7 @@ export default async function BookDetailPage({
           {book.chapters.map((ch) => (
             <li key={ch.id} style={{ marginBottom: '0.5rem' }}>
               <Link href={`/books/${book.id}/chapter/${ch.id}`}>
-                {ch.order}. {ch.title}
+                {ch.order}. {chapterDisplayTitle(ch.order, ch.title)}
               </Link>
             </li>
           ))}

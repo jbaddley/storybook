@@ -23,6 +23,7 @@ import { useFileOperations } from './hooks/useFileOperations';
 import { useMenuEvents } from './hooks/useMenuEvents';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutosave } from './hooks/useAutosave';
+import { useDbPullWhenNewer } from './hooks/useDbPullWhenNewer';
 import { DEFAULT_TIPTAP_CONTENT, DocumentTab } from '../shared/types';
 import './styles/app.css';
 
@@ -147,6 +148,9 @@ const App: React.FC = () => {
     lastSaved,
     filePath,
   } = useAutosave({ debounceMs: 2000, intervalMs: 30000 });
+
+  // When app gains focus or on interval: if DB has newer content, pull and update the app
+  useDbPullWhenNewer();
   
   const { handleNew, handleOpen, handleSave, handleSaveAs, handleExportDocx, handleExportPdf } = useFileOperations();
   

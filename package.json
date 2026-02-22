@@ -22,9 +22,9 @@
     "prisma:studio": "prisma studio",
     "prisma:push": "prisma db push",
     "postinstall": "prisma generate",
-    "web:dev": "npm run dev --prefix apps/web",
-    "web:build": "npm run build --prefix apps/web",
-    "web:start": "npm run start --prefix apps/web",
+    "web:dev": "node apps/web/run-dev.js",
+    "web:build": "cd apps/web && npm run build",
+    "web:start": "cd apps/web && npm run start",
     "pdf:test": "node scripts/pdf-export-test.js",
     "pdf:verify": "node scripts/verify-pdf-font.js scripts/output/test-export.pdf 20"
   },

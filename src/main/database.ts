@@ -40,6 +40,23 @@ function toJson<T>(value: T): Prisma.InputJsonValue {
   return value as unknown as Prisma.InputJsonValue;
 }
 
+/** Returns true if TipTap doc has no text (empty or default placeholder). */
+function isContentEmpty(content: unknown): boolean {
+  if (!content || typeof content !== 'object') return true;
+  const doc = content as { type?: string; content?: unknown[] };
+  if (doc.type !== 'doc' || !Array.isArray(doc.content)) return true;
+  function hasText(nodes: unknown[]): boolean {
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') continue;
+      const n = node as { type?: string; content?: unknown[]; text?: string };
+      if (n.type === 'text' && typeof n.text === 'string' && n.text.trim().length > 0) return true;
+      if (Array.isArray(n.content) && hasText(n.content)) return true;
+    }
+    return false;
+  }
+  return !hasText(doc.content);
+}
+
 // Singleton Prisma client
 let prisma: PrismaClient | null = null;
 
@@ -935,9 +952,23 @@ export async function syncBookToDatabase(userId: string, book: Book): Promise<vo
       });
     }
     
-    // Upsert chapters
+    // Upsert chapters (never overwrite existing DB content with empty – fixes chapter 1 showing blank online)
     for (const chapter of book.chapters) {
-      await upsertChapter(book.id, chapter);
+      let chapterToUpsert = chapter;
+      if (isContentEmpty(chapter.content)) {
+        const existing = await db.chapter.findUnique({
+          where: { id: chapter.id },
+          select: { content: true, originalContent: true },
+        });
+        if (existing?.content && !isContentEmpty(existing.content)) {
+          chapterToUpsert = {
+            ...chapter,
+            content: existing.content as TipTapContent,
+            originalContent: (existing.originalContent ?? chapter.originalContent) as TipTapContent | undefined,
+          };
+        }
+      }
+      await upsertChapter(book.id, chapterToUpsert);
     }
     
     // Get existing tab IDs

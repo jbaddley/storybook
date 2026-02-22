@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { fileService } from '../services/fileService';
 import { dbSyncService, ConflictWithResolution } from '../services/dbSyncService';
+import { flushActiveEditorToStore } from '../utils/flushEditorToStore';
 
 // Check if running in Electron
 const isElectron = () => typeof window !== 'undefined' && window.electronAPI !== undefined;
@@ -78,8 +79,17 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
       return;
     }
 
+    // Flush active chapter editor into store so we save the latest content
+    flushActiveEditorToStore();
+    const bookToSave = useBookStore.getState().book;
+
     // Check if book actually changed since last save
-    const currentHash = getBookHash();
+    const currentHash = JSON.stringify({
+      title: bookToSave.title,
+      chapters: bookToSave.chapters.map(c => ({ id: c.id, content: c.content, title: c.title })),
+      documentTabs: bookToSave.documentTabs?.map(t => ({ id: t.id, content: t.content })),
+      updatedAt: bookToSave.updatedAt,
+    });
     if (currentHash === lastBookHash.current) {
       return; // No changes, skip save
     }
@@ -89,7 +99,7 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
     
     try {
       // Save book to .sbk format
-      const data = await fileService.saveBook(book);
+      const data = await fileService.saveBook(bookToSave);
       
       // Write to file via Electron IPC
       const savedPath = await window.electronAPI.saveFile(data, currentFilePath);
@@ -102,7 +112,7 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
         if (dbSyncEnabled && dbSyncService.getCurrentUserId()) {
           setStatus('syncing');
           
-          const syncResult = await dbSyncService.syncBook(book);
+          const syncResult = await dbSyncService.syncBook(bookToSave);
           
           if (syncResult.success) {
             console.log('[Autosave] Synced to database');
@@ -151,7 +161,7 @@ export function useAutosave(options: UseAutosaveOptions = {}): UseAutosaveReturn
     } finally {
       isSaving.current = false;
     }
-  }, [book, currentFilePath, enabled, getBookHash, setDirty, dbSyncEnabled, status, pendingConflicts.length]);
+  }, [currentFilePath, enabled, setDirty, dbSyncEnabled, status, pendingConflicts.length]);
 
   // Debounced save - triggers after changes
   const debouncedSave = useCallback(() => {

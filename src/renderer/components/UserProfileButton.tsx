@@ -14,8 +14,8 @@ export const UserProfileButton: React.FC<UserProfileButtonProps> = ({ onAuthStat
   const [credentials, setCredentials] = useState<GoogleCredentials>({ clientId: '', clientSecret: '' });
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Sync state from auth service
-  const syncAuthState = useCallback(() => {
+  // Sync state from auth service and ensure DB user is linked for Sync to DB
+  const syncAuthState = useCallback(async () => {
     const authenticated = googleAuthService.isAuthenticated();
     const info = googleAuthService.getUserInfo();
     console.log('[UserProfileButton] Syncing auth state:', { authenticated, hasUserInfo: !!info, info });
@@ -24,10 +24,12 @@ export const UserProfileButton: React.FC<UserProfileButtonProps> = ({ onAuthStat
       setIsAuthenticated(true);
       setUserInfo(info);
       onAuthStateChange?.(true);
+      // Link Google account to database user so Sync to DB works
+      await googleAuthService.ensureDbUserId();
       return true;
     }
     
-    // Also check localStorage directly as fallback
+    // Also check localStorage directly as fallback – restore into service so Sync to DB works
     const storedUserInfo = localStorage.getItem('google_user_info');
     const storedTokens = localStorage.getItem('google_tokens');
     if (storedUserInfo && storedTokens) {
@@ -42,9 +44,14 @@ export const UserProfileButton: React.FC<UserProfileButtonProps> = ({ onAuthStat
         
         // Check if token is still valid
         if (parsedTokens.expiresAt > Date.now() && parsedInfo) {
+          // Restore into auth service so isAuthenticated() and ensureDbUserId() work
+          googleAuthService.loadTokens();
+          googleAuthService.loadUserInfo();
           setIsAuthenticated(true);
           setUserInfo(parsedInfo);
           onAuthStateChange?.(true);
+          // Link Google account to database user so Sync to DB works
+          await googleAuthService.ensureDbUserId();
           return true;
         }
       } catch (e) {
@@ -60,7 +67,7 @@ export const UserProfileButton: React.FC<UserProfileButtonProps> = ({ onAuthStat
       console.log('[UserProfileButton] Checking auth state on mount...');
       
       // First, try to sync from localStorage directly (fastest)
-      if (syncAuthState()) {
+      if (await syncAuthState()) {
         console.log('[UserProfileButton] Already authenticated from localStorage');
         return;
       }
@@ -109,9 +116,9 @@ export const UserProfileButton: React.FC<UserProfileButtonProps> = ({ onAuthStat
     checkAuth();
     
     // Also check periodically in case OAuth completed in background
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       if (!isAuthenticated) {
-        const nowAuthenticated = syncAuthState();
+        const nowAuthenticated = await syncAuthState();
         if (nowAuthenticated) {
           console.log('[UserProfileButton] Detected auth state change via polling');
         }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { googleDocsService, GoogleDriveFile } from '../services/googleDocsService';
 import { googleAuthService } from '../services/googleAuthService';
 import { fileService } from '../services/fileService';
@@ -12,6 +12,11 @@ interface GoogleDriveBackupDialogProps {
 
 type Tab = 'backup' | 'restore';
 
+interface FolderPathItem {
+  id: string;
+  name: string;
+}
+
 export const GoogleDriveBackupDialog: React.FC<GoogleDriveBackupDialogProps> = ({
   isOpen,
   onClose,
@@ -23,9 +28,19 @@ export const GoogleDriveBackupDialog: React.FC<GoogleDriveBackupDialogProps> = (
   const [success, setSuccess] = useState<string>('');
   const [sbkFiles, setSbkFiles] = useState<GoogleDriveFile[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // Folder picker for backup destination
+  const [folderPath, setFolderPath] = useState<FolderPathItem[]>([{ id: 'root', name: 'My Drive' }]);
+  const [backupFolders, setBackupFolders] = useState<GoogleDriveFile[]>([]);
+  const [isLoadingFolders, setIsLoadingFolders] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   
   const { book, ui, setBook } = useBookStore();
   const currentFilePath = ui.currentFilePath;
+
+  const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : 'root';
+  const backupFolderIdForSave = currentFolderId === 'root' ? null : currentFolderId;
 
   useEffect(() => {
     if (isOpen) {
@@ -35,6 +50,8 @@ export const GoogleDriveBackupDialog: React.FC<GoogleDriveBackupDialogProps> = (
       setError('');
       setSuccess('');
       setProgress('');
+      setFolderPath([{ id: 'root', name: 'My Drive' }]);
+      setNewFolderName('');
     }
   }, [isOpen]);
 
@@ -43,6 +60,64 @@ export const GoogleDriveBackupDialog: React.FC<GoogleDriveBackupDialogProps> = (
       loadSbkFiles();
     }
   }, [isOpen, activeTab, isAuthenticated]);
+
+  const loadBackupFolders = useCallback(async (parentId?: string) => {
+    setIsLoadingFolders(true);
+    setError('');
+    try {
+      const list = await googleDocsService.listFolders(parentId === 'root' ? undefined : parentId);
+      setBackupFolders(list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load folders');
+      setBackupFolders([]);
+    } finally {
+      setIsLoadingFolders(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen && activeTab === 'backup' && isAuthenticated) {
+      loadBackupFolders(currentFolderId === 'root' ? undefined : currentFolderId);
+    }
+  }, [isOpen, activeTab, isAuthenticated, currentFolderId, loadBackupFolders]);
+
+  const handleNavigateIntoFolder = (folder: GoogleDriveFile) => {
+    setFolderPath(prev => [...prev, { id: folder.id, name: folder.name }]);
+    loadBackupFolders(folder.id);
+  };
+
+  const handleNavigateUp = () => {
+    if (folderPath.length <= 1) return;
+    const newPath = folderPath.slice(0, -1);
+    setFolderPath(newPath);
+    const parentId = newPath[newPath.length - 1].id;
+    loadBackupFolders(parentId === 'root' ? undefined : parentId);
+  };
+
+  const handleNavigateToBreadcrumb = (index: number) => {
+    const newPath = folderPath.slice(0, index + 1);
+    setFolderPath(newPath);
+    const targetId = newPath[newPath.length - 1].id;
+    loadBackupFolders(targetId === 'root' ? undefined : targetId);
+  };
+
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim() || 'Storybook Backups';
+    if (!name) return;
+    setIsCreatingFolder(true);
+    setError('');
+    try {
+      const parentId = backupFolderIdForSave || undefined;
+      const { folderId } = await googleDocsService.createFolder(name, parentId);
+      setNewFolderName('');
+      setFolderPath(prev => [...prev, { id: folderId, name }]);
+      loadBackupFolders(folderId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create folder');
+    } finally {
+      setIsCreatingFolder(false);
+    }
+  };
 
   const loadSbkFiles = async () => {
     setIsLoading(true);
@@ -69,9 +144,15 @@ export const GoogleDriveBackupDialog: React.FC<GoogleDriveBackupDialogProps> = (
     setProgress('Preparing backup...');
 
     try {
-      // Get or create the backup folder
-      setProgress('Finding backup folder...');
-      const folderId = await googleDocsService.getOrCreateBackupFolder();
+      // Use selected folder or default "Storybook Backups"
+      let folderId: string;
+      if (backupFolderIdForSave) {
+        folderId = backupFolderIdForSave;
+        setProgress('Using selected folder...');
+      } else {
+        setProgress('Finding backup folder...');
+        folderId = await googleDocsService.getOrCreateBackupFolder();
+      }
 
       // Generate filename with timestamp
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -255,23 +336,142 @@ export const GoogleDriveBackupDialog: React.FC<GoogleDriveBackupDialogProps> = (
 
               {activeTab === 'backup' && (
                 <div>
-                  <p style={{ color: '#a1a1aa', marginBottom: '20px' }}>
-                    Save your entire book file (.sbk) to Google Drive for safekeeping. 
-                    Backups are stored in a "Storybook Backups" folder.
+                  <p style={{ color: '#a1a1aa', marginBottom: '12px' }}>
+                    Choose a folder for the backup, or use the default &quot;Storybook Backups&quot; folder. You can create a new folder below.
                   </p>
-                  
-                  <div style={{ 
-                    background: '#27272a', 
-                    borderRadius: '8px', 
-                    padding: '16px', 
-                    marginBottom: '20px' 
+
+                  {/* Breadcrumb */}
+                  <div style={{ marginBottom: '10px', fontSize: '13px', color: '#a1a1aa', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' }}>
+                    {folderPath.map((item, index) => (
+                      <span key={item.id}>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateToBreadcrumb(index)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: index === folderPath.length - 1 ? '#fff' : '#a1a1aa',
+                            cursor: 'pointer',
+                            padding: 0,
+                            textDecoration: index === folderPath.length - 1 ? 'none' : 'underline',
+                          }}
+                        >
+                          {item.name}
+                        </button>
+                        {index < folderPath.length - 1 && <span style={{ marginLeft: '4px' }}>›</span>}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Folder list */}
+                  <div style={{
+                    background: '#27272a',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '12px',
+                    maxHeight: '160px',
+                    overflowY: 'auto',
                   }}>
-                    <div style={{ marginBottom: '8px' }}>
+                    {folderPath.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={handleNavigateUp}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          width: '100%',
+                          padding: '8px 12px',
+                          marginBottom: '6px',
+                          background: '#3f3f46',
+                          border: 'none',
+                          borderRadius: '6px',
+                          color: '#fff',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          textAlign: 'left',
+                        }}
+                      >
+                        ↩ Up
+                      </button>
+                    )}
+                    {isLoadingFolders ? (
+                      <div style={{ padding: '16px', textAlign: 'center', color: '#71717a' }}>Loading folders…</div>
+                    ) : backupFolders.length === 0 ? (
+                      <div style={{ padding: '16px', textAlign: 'center', color: '#71717a' }}>
+                        No folders here. Create one below or backup to this location.
+                      </div>
+                    ) : (
+                      backupFolders.map((folder) => (
+                        <button
+                          type="button"
+                          key={folder.id}
+                          onClick={() => handleNavigateIntoFolder(folder)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            width: '100%',
+                            padding: '8px 12px',
+                            marginBottom: '4px',
+                            background: 'transparent',
+                            border: 'none',
+                            borderRadius: '6px',
+                            color: '#fff',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            textAlign: 'left',
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = '#3f3f46'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          📁 {folder.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Create new folder */}
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                    <input
+                      type="text"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      placeholder="New folder name"
+                      style={{
+                        flex: 1,
+                        padding: '8px 12px',
+                        background: '#27272a',
+                        border: '1px solid #3f3f46',
+                        borderRadius: '6px',
+                        color: '#fff',
+                        fontSize: '14px',
+                      }}
+                      onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCreateFolder}
+                      disabled={isCreatingFolder}
+                      style={{ whiteSpace: 'nowrap' }}
+                    >
+                      {isCreatingFolder ? 'Creating…' : '+ Add folder'}
+                    </button>
+                  </div>
+
+                  <div style={{ background: '#27272a', borderRadius: '8px', padding: '12px', marginBottom: '16px' }}>
+                    <div style={{ marginBottom: '4px' }}>
                       <strong>Current Book:</strong> {book?.title || 'Untitled'}
                     </div>
-                    <div style={{ color: '#a1a1aa', fontSize: '14px' }}>
+                    <div style={{ color: '#a1a1aa', fontSize: '13px' }}>
                       {book?.chapters.length || 0} chapters • {currentFilePath ? 'Saved locally' : 'Not saved locally'}
                     </div>
+                    {backupFolderIdForSave && (
+                      <div style={{ color: '#71717a', fontSize: '12px', marginTop: '6px' }}>
+                        Backup destination: {folderPath.map(p => p.name).join(' › ')}
+                      </div>
+                    )}
                   </div>
 
                   <button

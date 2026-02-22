@@ -34,6 +34,161 @@ a {
   text-decoration: none;
 }
 
+/* Chapter page: fixed header, only editor content scrolls. Lock to viewport so body never scrolls. */
+.chapter-page-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+.chapter-page-header {
+  flex-shrink: 0;
+}
+.chapter-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+.chapter-nav-row .chapter-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.chapter-nav-btn {
+  flex-shrink: 0;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.875rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #f5f5f5;
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.chapter-nav-btn:hover:not(.chapter-nav-disabled) {
+  background: #e8e8e8;
+  border-color: #999;
+}
+.chapter-nav-disabled {
+  opacity: 0.5;
+  cursor: default;
+  border-color: #e0e0e0;
+  background: #fafafa;
+}
+.chapter-editor-root {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: 1rem;
+}
+.chapter-editor-toolbar {
+  flex-shrink: 0;
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.chapter-editor-hint {
+  flex-shrink: 0;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+  color: #666;
+}
+.chapter-editor-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 52px; /* space for fixed bottom toolbar */
+}
+.chapter-editor-bottom-toolbar {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #f5f5f5;
+  border-top: 1px solid #ddd;
+  border-left: 1px solid #ddd;
+  border-right: 1px solid #ddd;
+  border-radius: 8px 8px 0 0;
+  z-index: 10;
+  box-sizing: border-box;
+}
+.chapter-editor-footer-spacer {
+  flex: 1;
+  min-width: 0.5rem;
+}
+.chapter-save-btn {
+  min-width: auto;
+  padding: 0.4rem 1rem;
+}
+.chapter-save-status {
+  font-size: 0.875rem;
+}
+.chapter-save-status-ok {
+  color: #0a0;
+}
+.chapter-save-status-err {
+  color: #c00;
+}
+.chapter-format-btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.875rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  min-width: 2.5rem;
+}
+.chapter-format-btn:hover:not(:disabled) {
+  background: #e8e8e8;
+  border-color: #999;
+}
+.chapter-format-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.chapter-format-btn[aria-pressed="true"] {
+  background: #ccc;
+  border-color: #999;
+}
+.chapter-editor-wrapper {
+  flex: 1 1 0;
+  min-height: 100%;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+}
+.chapter-editor-wrapper > div {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chapter-editor-wrapper .chapter-editor-prose,
+.chapter-editor-wrapper .ProseMirror {
+  flex: 1;
+  min-height: 0;
+  white-space: pre-wrap; /* preserve tabs and spaces */
+}
+
 .chapter-editor-prose p {
   margin-bottom: 0.5em;
 }

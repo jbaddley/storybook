@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useBookStore } from '../stores/bookStore';
 import { useFileOperations } from '../hooks/useFileOperations';
+import { dbSyncService } from '../services/dbSyncService';
+import { googleAuthService } from '../services/googleAuthService';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { UserProfileButton } from './UserProfileButton';
 
@@ -170,6 +172,14 @@ const Icons = {
       <path d="M22 12.5a10 10 0 0 1-18.8 4.2"/>
     </svg>
   ),
+  Database: () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+    </svg>
+  ),
 };
 
 interface ToolbarProps {
@@ -183,8 +193,48 @@ interface ToolbarProps {
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({ editorRef, onShowShortcuts, onShowRecovery, onImportGoogleDocs, onExportGoogleDocs, onSyncGoogleDocs, onGoogleDriveBackup }) => {
-  const { ui, book, zoomIn, zoomOut, resetZoom, setSettingsOpen } = useBookStore();
+  const { ui, book, zoomIn, zoomOut, resetZoom, setSettingsOpen, setSyncStatus, activeChapterId, updateChapterContent } = useBookStore();
   const { handleSave } = useFileOperations();
+
+  const handleSyncToDb = useCallback(async () => {
+    if (!book) return;
+    setSyncStatus({ isSyncing: true, direction: 'push', progress: 'Syncing to database...' });
+    try {
+      // Flush active chapter editor to store so we don't sync stale content (e.g. first chapter blank)
+      const editor = (window as unknown as { __tiptapEditor?: { getJSON: () => unknown } }).__tiptapEditor;
+      if (activeChapterId && editor?.getJSON) {
+        const content = editor.getJSON();
+        if (content && typeof content === 'object' && 'type' in content) {
+          updateChapterContent(activeChapterId, content as { type: 'doc'; content?: unknown[] });
+        }
+      }
+      const bookToSync = useBookStore.getState().book;
+
+      let userId = dbSyncService.getCurrentUserId() ?? await googleAuthService.ensureDbUserId();
+      if (!userId) {
+        // Restore auth from localStorage so we don't require re-login every time
+        googleAuthService.loadTokens();
+        googleAuthService.loadUserInfo();
+        userId = await googleAuthService.ensureDbUserId();
+      }
+      if (!userId) {
+        const isSignedIn = googleAuthService.isAuthenticated();
+        const message = isSignedIn
+          ? 'Database unavailable or account not linked. Check that the app database is set up, or try signing out and back in.'
+          : 'Sign in with Google (profile button) to sync to the database.';
+        setSyncStatus({ isSyncing: false, error: message, success: null });
+        return;
+      }
+      const result = await dbSyncService.syncBook(bookToSync);
+      if (result.success) {
+        setSyncStatus({ isSyncing: false, success: 'Synced to database', error: null });
+      } else {
+        setSyncStatus({ isSyncing: false, error: result.error ?? 'Sync failed', success: null });
+      }
+    } catch (e) {
+      setSyncStatus({ isSyncing: false, error: e instanceof Error ? e.message : String(e), success: null });
+    }
+  }, [book, setSyncStatus, activeChapterId, updateChapterContent]);
   
   // State for current formatting at cursor
   const [currentFont, setCurrentFont] = useState('Times New Roman');
@@ -701,6 +751,23 @@ export const Toolbar: React.FC<ToolbarProps> = ({ editorRef, onShowShortcuts, on
           <span style={{ fontSize: '11px' }}>Sync</span>
         </button>
       )}
+
+      {/* Sync to DB */}
+      <button
+        className="toolbar-btn"
+        onClick={handleSyncToDb}
+        disabled={!book || ui.syncStatus.isSyncing}
+        title="Sync current book to database"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px',
+          opacity: !book || ui.syncStatus.isSyncing ? 0.6 : 1,
+        }}
+      >
+        <Icons.Database />
+        <span style={{ fontSize: '11px' }}>Sync to DB</span>
+      </button>
 
       {/* Google Drive Backup */}
       {onGoogleDriveBackup && (
